@@ -8,6 +8,8 @@ from urllib.parse import unquote
 from wsgiref.simple_server import make_server
 
 MAX_UPLOAD = 20 * 1024 * 1024
+DEFAULT_AGGREGATION_POLICY = "mandatory_gate_optional_advisory_v1"
+AGGREGATION_POLICIES = {DEFAULT_AGGREGATION_POLICY, "all_requirements_blocking_v1"}
 ALLOWED_MIME = {"text/plain", "application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"}
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", re.I)
 SCHEMA = """
@@ -122,7 +124,9 @@ class TenderLensAPI:
             if row is None: return err(404,"not_found","Evaluation snapshot not found.")
             return 200,{"snapshot_id":row["id"],"input_sha256":row["input_sha256"],"created_at":row["created_at"],"status":"prepared_not_submitted","submission":json.loads(row["payload_json"])}
         if m!="POST" or snapshot_id is not None: return err(404,"not_found","Route not found.")
-        b=self.body_json(e); only_keys(b,{"evidence_ids"})
+        b=self.body_json(e); only_keys(b,{"evidence_ids","aggregation_policy"})
+        aggregation_policy=b.get("aggregation_policy",DEFAULT_AGGREGATION_POLICY)
+        if not isinstance(aggregation_policy,str) or aggregation_policy not in AGGREGATION_POLICIES: raise ValueError("aggregation_policy must be a supported evaluation policy")
         evidence_ids=b.get("evidence_ids",[])
         if not isinstance(evidence_ids,list) or len(evidence_ids)>100: raise ValueError("evidence_ids must be a list of at most 100 evidence UUIDs")
         if any(not isinstance(value,str) or not valid_id(value) for value in evidence_ids): raise ValueError("Every evidence_id must be a UUID")
@@ -148,7 +152,7 @@ class TenderLensAPI:
             evidence.append({"id":row["id"],"requirement_id":row["requirement_id"],"document_id":row["document_id"],"document_version":row["version"],"document_sha256":row["stored_sha256"],"filename":row["filename"],"start_byte":row["start_byte"],"end_byte":row["end_byte"],"excerpt":row["excerpt"],"provenance":provenance,"created_at":row["evidence_created_at"]})
         if any(len(item["text"])>4000 for item in requirements): raise ValueError("Requirement text exceeds the 4000-character contract limit")
         if any(len(item["excerpt"])>8000 for item in evidence): raise ValueError("Evidence excerpt exceeds the 8000-character contract limit")
-        base={"schema_version":"tenderlens.evaluation-submission.v1","evaluation_id":uid(),"snapshot_id":uid(),"tender_id":tid,"requirements":requirements,"evidence":evidence}
+        base={"schema_version":"tenderlens.evaluation-submission.v1","evaluation_id":uid(),"snapshot_id":uid(),"tender_id":tid,"aggregation_policy":aggregation_policy,"requirements":requirements,"evidence":evidence}
         canonical=json.dumps(base,sort_keys=True,separators=(",",":"),ensure_ascii=False)
         digest=hashlib.sha256(canonical.encode("utf-8")).hexdigest()
         submission={**base,"snapshot_sha256":digest}

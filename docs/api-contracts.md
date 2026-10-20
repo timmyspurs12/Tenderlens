@@ -50,23 +50,29 @@ type Evidence = { id:string; requirement_id:string|null; document_id:string; doc
 - `POST /api/tenders/{tenderId}/requirements` → `201 Requirement`; body `{ code, text, category, mandatory, kind }`. It registers a stated criterion only; it does not evaluate or endorse it.
 - `GET /api/tenders/{tenderId}/evidence` → `{ items: Evidence[] }`
 - `POST /api/tenders/{tenderId}/evidence` → `201 Evidence`; body `{ document_id, requirement_id?: string|null, start_byte, end_byte }`. For `text/plain` only, the excerpt is derived from exact UTF-8 bytes at the supplied half-open byte interval and the stored original's SHA-256 is rechecked. PDF/DOCX passage extraction intentionally returns `unsupported_evidence_source`; no page/section/citation is fabricated. A matching hash proves stored-byte integrity, not source authenticity or truth.
-- `POST /api/tenders/{tenderId}/evaluation-snapshots` → `201 EvaluationSnapshot`; body `{ evidence_ids?: string[] }`. The API includes every currently registered requirement and only the listed evidence records; an empty list deliberately represents missing evidence. Evidence must belong to this tender, point at an immutable document version, and still match its stored content hash and UTF-8 byte range. The server creates a snapshot UUID and SHA-256 over canonical JSON and stores the exact payload in an append-only row. Response: `{ snapshot_id, input_sha256, created_at, status: 'prepared_not_submitted', submission: EvaluationSubmission }`.
+- `POST /api/tenders/{tenderId}/evaluation-snapshots` → `201 EvaluationSnapshot`; body `{ evidence_ids?: string[], aggregation_policy?: 'mandatory_gate_optional_advisory_v1'|'all_requirements_blocking_v1' }`. The default is `mandatory_gate_optional_advisory_v1`. The API includes every currently registered requirement and only the listed evidence records; an empty list deliberately represents missing evidence. Evidence must belong to this tender, point at an immutable document version, and still match its stored content hash and UTF-8 byte range. The server creates a snapshot UUID and SHA-256 over canonical JSON and stores the exact payload in an append-only row. Response: `{ snapshot_id, input_sha256, created_at, status: 'prepared_not_submitted', submission: EvaluationSubmission }`.
 - `GET /api/tenders/{tenderId}/evaluation-snapshots` → `{ items: [{ id, input_sha256, created_at, status: 'prepared_not_submitted' }] }`
 - `GET /api/tenders/{tenderId}/evaluation-snapshots/{snapshotId}` → the same snapshot metadata plus the exact `submission` payload. Later uploads do not modify this snapshot. The payload can be serialized and passed to the contract constructor as `submission_json`.
 
-`EvaluationSubmission` schema version is `tenderlens.evaluation-submission.v1` and contains `evaluation_id`, `snapshot_id`, `snapshot_sha256`, `tender_id`, all requirement descriptors, and selected evidence descriptors including evidence/document UUIDs, document version, document SHA-256, filename, byte offsets, excerpt, original provenance, and creation timestamp. The backend-generated digest is SHA-256 over canonical JSON for the payload before the digest field is added. The contract validates its shape and records it, but does not authenticate the backend or independently recompute the digest. A deployment adapter must compare the contract's returned snapshot reference against the stored snapshot before associating results.
+`EvaluationSubmission` schema version is `tenderlens.evaluation-submission.v1` and contains `evaluation_id`, `snapshot_id`, `snapshot_sha256`, `tender_id`, `aggregation_policy`, all requirement descriptors, and selected evidence descriptors including evidence/document UUIDs, document version, document SHA-256, filename, byte offsets, excerpt, original provenance, and creation timestamp.
+
+The backend's canonical digest procedure is exact: take the complete submission object before adding `snapshot_sha256` (currently the keys are `schema_version`, `evaluation_id`, `snapshot_id`, `tender_id`, `aggregation_policy`, `requirements`, and `evidence`); serialize it with Python `json.dumps(base, sort_keys=True, separators=(",", ":"), ensure_ascii=False)`; encode the resulting string as UTF-8 with no added newline or whitespace; compute SHA-256; render lowercase hexadecimal. There is no Unicode normalization. The digest is attached as `snapshot_sha256`, and the same digest is returned as `input_sha256` and persisted alongside the exact payload. Backend tests recompute this value, including for non-ASCII input.
+
+**Trust boundary:** the contract validates that `snapshot_sha256` is 64 lowercase hexadecimal characters, but does not recompute it or authenticate that the payload came from TenderLens. Pinned Direct Mode tests establish direct Python behavior only; available documentation did not establish SHA-256 library support in the deployed runner corresponding to this contract. Therefore digest shape is not integrity proof. A caller able to deploy/initialize the contract can change payload data and retain any digest-shaped value. Until exact deployed-runner support is verified, integrity depends on the backend's authenticated snapshot route, its append-only database record, and the trusted adapter passing the exact stored submission unchanged; the contract itself cannot enforce that boundary. Any future adapter must compare both the returned `snapshot_id` and `snapshot_sha256` against the exact stored snapshot before associating results.
 
 ```ts
 type EvaluationSubmission = {
   schema_version: 'tenderlens.evaluation-submission.v1';
   evaluation_id: string; snapshot_id: string; snapshot_sha256: string; tender_id: string;
+  aggregation_policy: 'mandatory_gate_optional_advisory_v1'|'all_requirements_blocking_v1';
   requirements: Array<{ id: string; code: string; text: string; category: Requirement['category']; mandatory: boolean; kind: Requirement['kind'] }>;
   evidence: Array<{ id: string; requirement_id: string|null; document_id: string; document_version: number; document_sha256: string; filename: string; start_byte: number; end_byte: number; excerpt: string; provenance: Evidence['provenance']; created_at: string }>;
 };
 type EvaluationResult = {
   schema_version: 'tenderlens.evaluation-result.v1'; evaluation_id: string; tender_id: string;
   snapshot_id: string; snapshot_sha256: string;
-  overall_status: 'compliant'|'non_compliant'|'inconclusive';
+  aggregation_policy: 'mandatory_gate_optional_advisory_v1'|'all_requirements_blocking_v1';
+  overall_status: 'compliant'|'mandatory_non_compliance'|'optional_non_compliance'|'non_compliant'|'inconclusive';
   decisions: Array<{ requirement_id: string; code: string; mandatory: boolean;
     status: 'compliant'|'non_compliant'|'insufficient_evidence'|'contradictory_evidence';
     reason: string; evidence_refs: Array<{ evidence_id: string; document_id: string; document_version: number; document_sha256: string; filename: string; start_byte: number; end_byte: number }> }>;
@@ -75,7 +81,12 @@ type EvaluationResult = {
 };
 ```
 
-Overall status is `non_compliant` if any requirement is explicitly non-compliant; otherwise it is `inconclusive` if any requirement is insufficient or contradictory; otherwise it is `compliant`. Missing evidence is deterministically insufficient and never reaches the LLM path. Evidence with no `requirement_id` is treated as supplied context for every requirement; requirement-scoped evidence is considered only for that requirement.
+### Configurable evaluation aggregation policies
+
+- `mandatory_gate_optional_advisory_v1` (default): any mandatory `non_compliant` finding yields `mandatory_non_compliance`; otherwise any `insufficient_evidence` or `contradictory_evidence` yields `inconclusive`; otherwise an optional `non_compliant` finding yields `optional_non_compliance`; otherwise the result is `compliant`. Optional non-compliance is reported, but is not silently promoted to mandatory eligibility failure.
+- `all_requirements_blocking_v1`: any `non_compliant` finding (mandatory or optional) yields `non_compliant`; absent that, any insufficient or contradictory finding yields `inconclusive`; otherwise `compliant`.
+
+In both policies, insufficient and contradictory findings remain unresolved and appear in `unresolved_requirements`, even when a mandatory non-compliance determines the overall status. This is a configurable evaluation summary, not a procurement-law rule, eligibility determination, or award decision. The application does not prescribe which policy a procuring entity should choose. Missing evidence is deterministically `insufficient_evidence` and never reaches the LLM path. Evidence with no `requirement_id` is treated as supplied context for every requirement; requirement-scoped evidence is considered only for that requirement. Model responses must contain exactly `status`, `reason`, and structured `evidence_ids`; citations must identify evidence supplied for that requirement. Result references are constructed from those submitted evidence records, never from model-provided reference metadata.
 
 ## Implemented Direct Mode contract; no network lifecycle
 

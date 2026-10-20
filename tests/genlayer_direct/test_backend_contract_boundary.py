@@ -57,8 +57,8 @@ def test_contract_evaluates_backend_generated_snapshot(tmp_path, direct_vm, dire
     assert snapshot["status"] == "prepared_not_submitted"
 
     direct_vm.mock_llm(
-        r"Classify each requirement using only the provided evidence data",
-        encoded({"status": "compliant", "reason": "The provided licence evidence supports the requirement."}),
+        r"Classify this requirement using only the supplied evidence data",
+        encoded({"status": "compliant", "reason": "The provided licence evidence supports the requirement.", "evidence_ids": [evidence["id"]]}),
     )
     contract = direct_deploy(str(CONTRACT), encoded(snapshot["submission"]))
     result = json.loads(contract.evaluate())

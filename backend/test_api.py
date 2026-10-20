@@ -79,6 +79,18 @@ class BackendAPITest(unittest.TestCase):
         self.assertEqual(loaded['submission'],submission); self.assertEqual(loaded['input_sha256'],digest)
         with self.assertRaises(sqlite3.IntegrityError):
             with self.app.db() as c: c.execute("UPDATE evaluation_snapshots SET payload_json='{}' WHERE id=?",(snapshot['snapshot_id'],))
+    def test_snapshot_canonical_hash_preserves_unicode_and_selected_policy(self):
+        tid=self.create_tender()
+        status,req,_=self.call('POST',f'/api/tenders/{tid}/requirements',{'code':'UNICODE-1','text':'Verify café — 東京.','category':'technical','mandatory':False,'kind':'judgment'}); self.assertEqual(status,201)
+        status,snapshot,_=self.call('POST',f'/api/tenders/{tid}/evaluation-snapshots',{'aggregation_policy':'all_requirements_blocking_v1'}); self.assertEqual(status,201)
+        payload=snapshot['submission']; self.assertEqual(payload['aggregation_policy'],'all_requirements_blocking_v1'); self.assertEqual(payload['requirements'][0]['id'],req['id'])
+        base={key:value for key,value in payload.items() if key!='snapshot_sha256'}
+        canonical=json.dumps(base,sort_keys=True,separators=(',',':'),ensure_ascii=False).encode('utf-8')
+        digest=hashlib.sha256(canonical).hexdigest()
+        self.assertEqual(payload['snapshot_sha256'],digest); self.assertEqual(snapshot['input_sha256'],digest)
+        self.assertIn('東京'.encode('utf-8'),canonical)
+        status,body,_=self.call('POST',f'/api/tenders/{tid}/evaluation-snapshots',{'aggregation_policy':'invented_award_rule'})
+        self.assertEqual(status,400); self.assertEqual(body['error']['code'],'validation_error')
     def test_evaluation_snapshot_rejects_cross_tender_or_unknown_evidence(self):
         tid=self.create_tender(); other_tid=self.call('POST','/api/tenders',{'title':'Other','reference':'REF-OTHER'})[1]['id']
         self.call('POST',f'/api/tenders/{tid}/requirements',{'code':'R-1','text':'Must comply.','category':'technical','mandatory':True,'kind':'objective'})
