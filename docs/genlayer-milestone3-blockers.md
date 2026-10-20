@@ -1,25 +1,25 @@
-# Milestone 3 — environment gate and implementation status
+# GenLayer environment discovery: Milestone 3A
 
-**Status: blocked before contract implementation.** No contract, Direct Mode test, evaluation-submission API, or lifecycle adapter has been added. This avoids shipping an uncompiled contract, treating simulations as consensus, or accepting transaction/finality claims without a trusted status source.
+## Runtime status
 
-## Repository/environment discovery
+The local Agent Mode host remains CPython 3.11.2, with no `python3.12`, Docker, or GenLayer CLI. `uv==0.13.3` is available only from a temporary `pip --target` install, not system-wide. Attempts to download managed CPython 3.12.15 from `github.com/astral-sh/python-build-standalone` failed on its redirect to `objects.githubusercontent.com` (`UnknownIssuer`). No local Python 3.12 environment was created, and no package has been installed into the existing Python environment.
 
-- Checkout: `arena/fa6458cf-tenderlens`, starting commit `ce919fd`; existing WSGI/SQLite API and prior tests are present and unchanged.
-- Host Python is CPython 3.11.2. `python3.12`, Docker, GenLayer CLI, and the `genlayer` Python module are absent.
-- No `GENLAYER*`, RPC, wallet/private-key, `TENDERLENS*`, or database configuration variables are present in the environment. No network or deployment was selected or attempted.
-- `uv==0.8.17` was installed into `/tmp/tenderlens-uv-bootstrap` using pip's `--target`, not into the system Python. `uv python install 3.12.11 --install-dir /home/user/.local/share/uv/python` failed downloading the official standalone CPython release from GitHub because the redirected `objects.githubusercontent.com` TLS connection failed (`UnknownIssuer`, then TLS handshake EOF). No 3.12 interpreter or project venv was created. The local restriction permits `github.com` and `codeload.github.com`, but not the release-asset host; the source tarball route lacks the system development headers needed for a reliable standalone build. The existing system Python was not altered.
+A reproducible GitHub Codespaces configuration is now checked in under `.devcontainer/`. Its base image is the published Microsoft Dev Container Python tag `mcr.microsoft.com/devcontainers/python:3.12-bookworm`, verified as a listed variant in the official `devcontainers/images` repository. The `postCreateCommand` asserts CPython 3.12, reports pip and GenLayer versions, and checks that the Direct Mode runner exists. The image/container itself was **not built or launched** in this local environment, and the Codespaces checks have not run.
 
-## Official tooling checked
+## GenLayer dependency compatibility finding
 
-- Official Direct Mode/Studio Mode docs: <https://docs.genlayer.com/api-references/genlayer-test>. They specify Python >=3.12; Direct Mode requires no Docker/network; Studio Mode requires GenLayer Studio (Docker).
-- The official `genlayerlabs/genlayer-testing-suite` `pyproject.toml` states `genlayer-test==0.29.2` upstream and a supported `genlayer-py>=0.18.0,<0.20.0` range. PyPI metadata was checked: `genlayer-test 0.29.2` and `genlayer-py 0.18.0` both require Python >=3.12. These are candidate compatible pins, not installed/tested in this checkout.
-- Official contract docs require non-deterministic work inside `gl.eq_principle.*`, prohibit storage access inside the nondeterministic closure, and require validators independently verify the substance of the leader's result: <https://docs.genlayer.com/developers/intelligent-contracts/first-intelligent-contract> and <https://docs.genlayer.com/developers/intelligent-contracts/equivalence-principle>.
-- The apparent legacy Direct Mode URL `/developers/intelligent-contracts/testing/direct-mode` returned 404; the current testing-suite API reference above is used instead.
+The official testing-suite GitHub `main` resolves to signed commit `343e3a358f9e235a93b49c60721ce7676585ff07`. Its `pyproject.toml` declares package version `0.29.2`, requires Python >=3.12, and accepts `genlayer-py>=0.18.0,<0.20.0`. The exact PyPI release `genlayer-test==0.29.2`, however, publishes metadata `genlayer-py>=0.13.0,<0.17.0`. This was checked directly from the PyPI JSON for release 0.29.2. Therefore the PyPI distribution and requested `genlayer-py==0.18.0` are incompatible; forcing either would conceal a dependency conflict.
 
-## Why lifecycle work is also blocked
+`requirements-genlayer.in` instead pins the official source at that immutable signed Git commit (which declares the required 0.29.2 package version) together with `genlayer-py==0.18.0` and `pytest==9.1.1`. The transitive dependency lock with artifact hashes was successfully resolved for Python 3.12 using `uv pip compile` into `requirements-genlayer.lock.txt`. This is a **lock resolution**, not evidence that the packages were installed or that tests passed. uv warned that the Python 3.12 interpreter was unavailable locally; it used Python 3.11.2 to build dependency metadata while resolving the requested target.
 
-A durable evaluation submitter must persist the returned transaction identifier before returning a submission response, then resume tracking through a supported GenLayer lifecycle/status API. Without the compatible SDK/runtime (and, for Studio Mode, a Studio endpoint), there is no verified submission response shape, retry/idempotency behavior, protocol-status enum, execution-result source, or finalization confirmation to safely implement. A local fake adapter or client-supplied state would violate the milestone's trust boundary. No evaluation route is exposed as a placeholder.
+## Official references checked
 
-## Next action
+- [Official GenLayer Testing Suite docs (Direct Mode and Studio Mode)](https://docs.genlayer.com/api-references/genlayer-test): Direct Mode needs Python >=3.12 but no Docker/network; Studio Mode requires Docker.
+- [Official testing-suite source at the pinned commit](https://github.com/genlayerlabs/genlayer-testing-suite/tree/343e3a358f9e235a93b49c60721ce7676585ff07).
+- [Pinned commit API/signature metadata](https://api.github.com/repos/genlayerlabs/genlayer-testing-suite/commits/343e3a358f9e235a93b49c60721ce7676585ff07).
+- [PyPI metadata for `genlayer-test` 0.29.2](https://pypi.org/pypi/genlayer-test/0.29.2/json).
+- [Official Microsoft Dev Container Python image source](https://github.com/devcontainers/images/tree/main/src/python): lists published variant `3.12-bookworm`; a runtime pull/digest was not available from this host.
 
-Provide a supported CPython 3.12+ runtime in the environment, or permit access to the official standalone Python release-asset host; then create a repository-local virtual environment, install the candidate pins, verify the actual installed GenLayer APIs, write contract Direct Mode tests, and only then add the database migration and worker against verified transaction interfaces. Studio integration/deployment remains a separate step requiring explicit network selection and authorization. Do not expose submissions to the browser before an authenticated BFF/session is in place.
+## Verification still required in Codespaces
+
+Open this feature branch in GitHub Codespaces, wait for the post-create script to complete, and verify `python --version`, `python -m pip --version`, `python -m pip show genlayer-test genlayer-py`, `gltest --help`, then run the backend unittest suite and frontend npm test/typecheck/lint/build commands. Only after those environment checks pass should contract work begin. No wallet secrets, network credentials, or deployment configuration are included. No Studio Mode, deployment, transaction, or consensus flow was attempted.

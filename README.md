@@ -22,6 +22,16 @@ No GenLayer SDK, tested Intelligent Contract, evaluation submission API, network
 
 `VITE_API_BASE_URL` is the frontend's optional service origin. No private key or privileged API token belongs in a `VITE_*` variable.
 
+## GenLayer development container
+
+On GitHub, switch to branch `arena/fa6458cf-tenderlens`, choose **Code → Codespaces → Create codespace on branch**, then wait for `.devcontainer/setup.sh` to finish. For an existing Codespace, run **Codespaces: Rebuild Container** from the command palette. The checked-in `.devcontainer/Dockerfile` uses the published Microsoft Python image `mcr.microsoft.com/devcontainers/python:3.12-bookworm` (official `devcontainers/images` lists `3.12-bookworm` as an available published variant); the post-create script asserts Python 3.12 and reports pip and GenLayer versions before succeeding. Node.js is pinned by the devcontainer Node feature to 22.14.0 for the existing Vite regression suite. The actual image pull/build is not performed by this repository setup and must succeed in Codespaces; the setup script fails if its runtime checks do not match.
+
+The project Python environment is isolated in `.venv`. `requirements-genlayer.lock.txt` locks the resolved runtime dependency graph with hashes, while `requirements-genlayer.in` pins the intended roots. The official suite's PEP 517 backend is constrained separately in `requirements-genlayer-build.lock.txt`. Rebuild the locks with `uv pip compile requirements-genlayer.in --python-version 3.12 --generate-hashes --output-file requirements-genlayer.lock.txt` and `uv pip compile requirements-genlayer-build.in --python-version 3.12 --generate-hashes --output-file requirements-genlayer-build.lock.txt`; install with `uv venv --seed --python 3.12 .venv && uv pip sync --build-constraints requirements-genlayer-build.lock.txt --python .venv/bin/python requirements-genlayer.lock.txt`.
+
+**Important upstream compatibility discrepancy:** the official `genlayer-test` GitHub source at signed commit `343e3a358f9e235a93b49c60721ce7676585ff07` declares version 0.29.2 and `genlayer-py>=0.18.0,<0.20.0`. The PyPI wheel also reports 0.29.2 but its published metadata instead requires `genlayer-py>=0.13.0,<0.17.0`. Those constraints cannot be installed together with SDK 0.18.0. To satisfy the requested compatible pair without overriding dependency metadata, this environment pins the official upstream source commit (package version 0.29.2) and SDK 0.18.0; it deliberately does not install the incompatible PyPI wheel. Both alternatives must be rechecked upstream before changing these pins.
+
+The devcontainer was not built or opened as a Codespace in this execution environment, so its Python version, dependency installation, and `gltest` command have not yet been executed here. The `postCreateCommand` performs those checks and fails closed if installed package versions differ. No contract tests exist yet; Direct Mode is the intended first runtime validation, with no network or credentials required.
+
 ## Design system
 
 Shared colors, type roles, and component patterns are centralized in `src/style.css`: warm porcelain canvas, ink text, restrained forest/amber/red semantic colors, 8px-oriented spacing, DM Sans UI, Newsreader editorial headings, and DM Mono metadata. Breakpoints cover tablet/mobile; reduced-motion and print styles are included.
