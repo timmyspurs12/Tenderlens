@@ -12,13 +12,15 @@ TenderLens is a source-first procurement intelligence workspace. It presents ame
 
 Never put private credentials, signing keys, or privileged API tokens in `VITE_*` variables. This is a Vite SPA and does not provide server-side authentication or authorization; deploy behind an authenticated backend or identity-aware gateway before exposing tender records.
 
-## Backend contract expected by this frontend
+## Backend
 
-- `GET /api/tenders` → `Tender[]` or `{ items: Tender[] }`, where every record includes string `id`, `title`, and `reference`; optional `deadline` and `status`.
-- `POST /api/tenders` → created tender record including string `id`; request fields `title`, `reference`, optional `deadline`.
-- Subsequent tender screens require backend routes for document/version records, requirement and evidence records, amendment comparisons, evaluation lifecycle and audit records, report generation, and authenticated workspace/user operations. The UI marks these capabilities unavailable until those routes are defined and integrated. There is no demo dataset.
+A small standard-library API and SQLite/content-addressed document store is implemented under `backend/`. It supports authenticated tender registration, immutable uploads, server-calculated SHA-256, explicit document links/amendment annotations, requirement registration, and byte-range evidence provenance for plain-text files. The API requires a workspace-scoped bearer credential; the browser must never receive that privileged token. Therefore the current SPA is not yet connected directly: deploy a same-origin authenticated BFF/identity-aware gateway before wiring protected records into browser views.
 
-`VITE_API_BASE_URL` is the only frontend environment variable currently used. No contract/network configuration or transaction explorer URL is synthesized by the frontend.
+Set `TENDERLENS_API_TOKEN` to a random secret of at least 32 characters, `TENDERLENS_WORKSPACE` to the isolated workspace identifier, and optionally `TENDERLENS_DB_PATH` / `TENDERLENS_BLOB_DIR` (defaults under `./var/`). Run `python backend/app.py` for local development only; the built-in WSGI server is not suitable for production. Use TLS, an authenticated gateway, and durable encrypted storage for deployments. Endpoint schemas, error codes, route authorization, and unimplemented transaction lifecycle states are documented in [`docs/api-contracts.md`](docs/api-contracts.md).
+
+No GenLayer SDK, tested Intelligent Contract, evaluation submission API, network credentials, or deployment configuration is present. Do not submit or assert an on-chain evaluation. Amendment annotations are user-provided, and semantic comparison is explicitly unavailable. PDFs and DOCX files are retained and hashed; text passage extraction is only supported for plain text. No demo records are generated.
+
+`VITE_API_BASE_URL` is the frontend's optional service origin. No private key or privileged API token belongs in a `VITE_*` variable.
 
 ## Design system
 
