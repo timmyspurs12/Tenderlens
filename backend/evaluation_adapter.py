@@ -20,6 +20,7 @@ RESULT_SCHEMA = "tenderlens.evaluation-result.v1"
 SUBMISSION_SCHEMA = "tenderlens.evaluation-submission.v1"
 TX_HASH = re.compile(r"^0x[0-9a-fA-F]{64}$")
 CONTRACT_ADDRESS = re.compile(r"^0x[0-9a-fA-F]{40}$")
+UUID_CITATION_PATTERN = re.compile(r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b")
 
 
 class AdapterError(ValueError):
@@ -157,7 +158,7 @@ class SubmissionLifecycle:
             raise AdapterError("invalid_failure_code")
         return self._change({"submission_in_progress", "deployment_submission_in_progress", "deployment_submitted",
                              "deployment_finalized", "evaluation_submission_in_progress", "evaluation_submitted",
-                             "pending", "outcome_unknown"}, "failed", network_status=network_status,
+                             "pending", "outcome_unknown", "finalized"}, "failed", network_status=network_status,
                             failure_code=code)
 
     def outcome_unknown(self, network_status: str | None = None):
@@ -227,8 +228,13 @@ class EvaluationAdapter:
             if row is None or not self.api.snapshot_row_is_valid(row):
                 raise AdapterError("integrity_failure")
             raw_payload = row["payload_json"]
-            if not isinstance(raw_payload, str) or len(raw_payload) > 250_000:
-                raise AdapterError("snapshot_exceeds_contract_limit")
+            if not isinstance(raw_payload, str):
+                raise AdapterError("malformed_submission")
+            try:
+                if len(raw_payload.encode("utf-8")) > 250_000:
+                    raise AdapterError("snapshot_exceeds_contract_limit")
+            except UnicodeEncodeError as exc:
+                raise AdapterError("malformed_submission") from exc
             submission = _strict_json_object(raw_payload)
             if (row["tender_id"] != tender_id or response.get("snapshot_id") != snapshot_id
                     or response.get("input_sha256") != row["input_sha256"]
@@ -389,6 +395,8 @@ class EvaluationAdapter:
             )
         except Exception:
             state = self.get_request(prepared["request_id"])
+            if state.get("failure_code") == "result_verification_failed":
+                raise AdapterError("result_verification_failed") from None
             if state["lifecycle_state"] not in {"failed", "pending", "outcome_unknown", "finalized"}:
                 try:
                     lifecycle.outcome_unknown()
@@ -412,8 +420,13 @@ class EvaluationAdapter:
         if "result_json" in outcome:
             if current["lifecycle_state"] != "finalized":
                 raise AdapterError("result_before_finalization")
-            result = self.accept_result(prepared["request_id"], refs[0], refs[2], outcome["result_json"],
-                                        outcome.get("result_reference"))
+            try:
+                result = self.accept_result(prepared["request_id"], refs[0], refs[2], outcome["result_json"],
+                                            outcome.get("result_reference"))
+            except AdapterError:
+                self.lifecycle(prepared["request_id"]).failed(
+                    "result_verification_failed", "RESULT_VERIFICATION_FAILED")
+                raise AdapterError("result_verification_failed") from None
             return {**result, "contract_address": refs[0], "deployment_tx_hash": refs[1],
                     "evaluation_tx_hash": refs[2], "policy_version": prepared["policy_version"]}
         return {**current, "snapshot_id": prepared["snapshot_id"],
@@ -469,7 +482,9 @@ class EvaluationAdapter:
             req = requirements.get(req_id)
             if req is None or req_id in by_id or decision.get("code") != req["code"] or decision.get("mandatory") is not req["mandatory"]:
                 raise AdapterError("result_requirement_mismatch")
-            if decision.get("status") not in {"compliant", "non_compliant", "insufficient_evidence", "contradictory_evidence"} or not isinstance(decision.get("reason"), str):
+            reason = decision.get("reason")
+            if (decision.get("status") not in {"compliant", "non_compliant", "insufficient_evidence", "contradictory_evidence"}
+                    or not isinstance(reason, str) or not reason.strip() or len(reason) > 2000):
                 raise AdapterError("malformed_result_decision")
             refs = decision.get("evidence_refs")
             if not isinstance(refs, list):
@@ -489,6 +504,10 @@ class EvaluationAdapter:
                 if ref != expected_ref or (source["requirement_id"] is not None and source["requirement_id"] != req_id):
                     raise AdapterError("result_evidence_reference_mismatch")
                 seen_refs.add(ref["evidence_id"])
+            for cited_in_reason in UUID_CITATION_PATTERN.findall(reason):
+                normalized_id = cited_in_reason.lower()
+                if normalized_id not in seen_refs:
+                    raise AdapterError("result_reason_contains_unsupported_evidence_id")
             candidates = [item for item in submission["evidence"] if item["requirement_id"] is None or item["requirement_id"] == req_id]
             if not candidates and (decision["status"] != "insufficient_evidence" or refs or decision["reason"] != "No evidence was supplied for this requirement; absence is not compliance."):
                 raise AdapterError("result_without_evidence_mismatch")

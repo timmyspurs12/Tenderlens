@@ -45,16 +45,27 @@ class ProcurementEvaluation(gl.contract.Contract):
     def __init__(self, submission_json: str):
         if not isinstance(submission_json, str) or not submission_json:
             raise ValueError("submission_json must be a non-empty JSON string")
-        if len(submission_json) > 250000:
-            raise ValueError("submission_json exceeds the 250000-character limit")
+        try:
+            input_size = len(submission_json.encode("utf-8"))
+        except UnicodeError:
+            raise ValueError("submission_json must be valid UTF-8")
+        if input_size > 250000:
+            raise ValueError("submission_json exceeds the 250000-byte limit")
         try:
             submission = json.loads(submission_json)
         except Exception:
             raise ValueError("submission_json must contain valid JSON")
         self._validate_submission(submission)
-        self.submission_json = json.dumps(
-            submission, sort_keys=True, separators=(",", ":"), ensure_ascii=False
-        )
+        try:
+            canonical_submission = json.dumps(
+                submission, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+            )
+            canonical_bytes = canonical_submission.encode("utf-8")
+        except (TypeError, UnicodeError):
+            raise ValueError("submission contains invalid Unicode or unsupported JSON values")
+        if len(canonical_bytes) > 250000:
+            raise ValueError("canonical submission exceeds the 250000-byte limit")
+        self.submission_json = canonical_submission
         self.result_json = ""
         self.lifecycle_status = "prepared"
 
@@ -266,6 +277,8 @@ class ProcurementEvaluation(gl.contract.Contract):
             "disclaimer": "Evidence interpretation only; not legal advice and not an automatic procurement award.",
         }
         serialized = json.dumps(result, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        if len(serialized.encode("utf-8")) > 250000:
+            raise ValueError("evaluation result exceeds the 250000-byte limit")
         self.result_json = serialized
         self.lifecycle_status = "evaluated"
         return serialized

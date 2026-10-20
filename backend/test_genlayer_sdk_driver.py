@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import unittest
+from dataclasses import FrozenInstanceError
 from pathlib import Path
+import tempfile
 from types import SimpleNamespace
 
 from backend.evaluation_adapter import _make_verified_submission
@@ -26,6 +28,9 @@ class FakeClient:
         self.w3 = SimpleNamespace(eth=SimpleNamespace(chain_id=chain_id))
         self.execution = execution
         self.pending = pending
+        self.receipt_hash = None
+        self.receipt_status = "FINALIZED"
+        self.receipt_execution = "FINISHED_WITH_RETURN"
         self.calls = []
 
     def deploy_contract(self, *, code, account, args):
@@ -35,12 +40,14 @@ class FakeClient:
     def get_transaction(self, *, transaction_hash):
         self.calls.append(("poll", transaction_hash))
         if self.pending:
-            return {"status_name": "PENDING", "tx_execution_result_name": "NOT_VOTED"}
-        return {"status_name": "FINALIZED", "tx_execution_result_name": self.execution}
+            return {"tx_id": transaction_hash, "status_name": "PENDING", "tx_execution_result_name": "NOT_VOTED"}
+        return {"tx_id": transaction_hash, "status_name": "FINALIZED", "tx_execution_result_name": self.execution}
 
     def wait_for_transaction_receipt(self, *, transaction_hash, status, interval, retries):
         self.calls.append(("receipt", transaction_hash, status, interval, retries))
-        return {"tx_data_decoded": {"contract_address": CONTRACT}}
+        return {"tx_id": self.receipt_hash or transaction_hash, "status_name": self.receipt_status,
+                "tx_execution_result_name": self.receipt_execution,
+                "tx_data_decoded": {"contract_address": CONTRACT}}
 
     def write_contract(self, *, address, function_name, account, args):
         self.calls.append(("write", address, function_name, args))
@@ -61,8 +68,10 @@ class FakeSDK:
     def __init__(self, client=None):
         self.client = client or FakeClient()
         self.create_calls = 0
+        self.account_calls = 0
 
     def create_account(self, *, account_private_key):
+        self.account_calls += 1
         assert account_private_key == KEY
         return SimpleNamespace(address="0x" + "b" * 40)
 
@@ -82,11 +91,12 @@ class Lifecycle:
         return record
 
 
-def configured_driver(sdk=None, *, funding_verifier=None):
+def configured_driver(sdk=None, *, funding_verifier=None, contract_path=FIXTURE):
     return GenLayerSDKDriver(
         DriverConfig(network="testnet_asimov", private_key=KEY, broadcast_authorized=True,
-                     contract_path=FIXTURE, poll_interval_seconds=0.001, max_polls=2),
+                     contract_path=contract_path, poll_interval_seconds=0.001, max_polls=2),
         runtime_qualifier=lambda dependency, network: dependency == "qualified-fixture" and network == "testnet_asimov",
+        network_identity_verifier=lambda client, chain, network: network == "testnet_asimov" and client.w3.eth.chain_id == chain.id,
         funding_verifier=funding_verifier or (lambda client, account, network: True),
         sdk=sdk or FakeSDK(), sleep=lambda _seconds: None,
     )
@@ -135,7 +145,9 @@ class GenLayerSDKDriverTests(unittest.TestCase):
     def test_reconcile_polls_deployment_but_does_not_implicitly_submit_evaluation(self):
         sdk = FakeSDK()
         driver = GenLayerSDKDriver(
-            DriverConfig(network="testnet_asimov", private_key=KEY, contract_path=FIXTURE), sdk=sdk)
+            DriverConfig(network="testnet_asimov", private_key="", contract_path=FIXTURE),
+            network_identity_verifier=lambda client, chain, network: client.w3.eth.chain_id == chain.id,
+            sdk=sdk)
         request_id = "10000000-0000-4000-8000-000000000001"
         state = {"request_id": request_id, "lifecycle_state": "deployment_submitted",
                  "deployment_tx_hash": TX_DEPLOY, "evaluation_tx_hash": None, "contract_address": None,
@@ -166,9 +178,13 @@ class GenLayerSDKDriverTests(unittest.TestCase):
     def test_readonly_recovery_context_needs_no_broadcast_or_funding_gate(self):
         sdk = FakeSDK()
         driver = GenLayerSDKDriver(
-            DriverConfig(network="testnet_asimov", private_key=KEY, contract_path=FIXTURE), sdk=sdk)
+            DriverConfig(network="testnet_asimov", private_key="", contract_path=FIXTURE),
+            network_identity_verifier=lambda client, chain, network: client.w3.eth.chain_id == chain.id,
+            sdk=sdk)
         runtime = driver.prepare_readonly()
         self.assertFalse(runtime.broadcast_ready)
+        self.assertIsNone(runtime.account)
+        self.assertEqual(sdk.account_calls, 0)
         verified = _make_verified_submission(self.submission(), "10000000-0000-4000-8000-000000000001",
                                              "10000000-0000-4000-8000-000000000001", "a" * 64,
                                              "mandatory_gate_optional_advisory_v1")
@@ -191,10 +207,22 @@ class GenLayerSDKDriverTests(unittest.TestCase):
         sdk = FakeSDK()
         driver = GenLayerSDKDriver(
             DriverConfig(network="testnet_asimov", private_key=KEY, broadcast_authorized=True),
-            runtime_qualifier=lambda *_: True, funding_verifier=lambda *_: True, sdk=sdk)
+            runtime_qualifier=lambda *_: True,
+            network_identity_verifier=lambda *_: True,
+            funding_verifier=lambda *_: True, sdk=sdk)
         with self.assertRaisesRegex(DriverError, "mutable_contract_runtime_reference"):
             driver.prepare()
         self.assertEqual(sdk.create_calls, 0)
+
+    def test_false_or_non_boolean_runtime_qualification_never_reaches_sdk(self):
+        for verifier_result in (False, None, 1):
+            sdk=FakeSDK()
+            driver=configured_driver(sdk)
+            driver.runtime_qualifier=lambda *_args, result=verifier_result: result
+            with self.subTest(verifier_result=verifier_result), self.assertRaisesRegex(DriverError,"runtime_not_qualified"):
+                driver.prepare()
+            self.assertEqual(sdk.create_calls,0)
+            self.assertFalse(any(call[0] in {"deploy","write"} for call in sdk.client.calls))
 
     def test_missing_target_runtime_or_funding_verifier_fails_closed(self):
         sdk = FakeSDK()
@@ -204,6 +232,26 @@ class GenLayerSDKDriverTests(unittest.TestCase):
         with self.assertRaisesRegex(DriverError, "runtime_or_funding_qualification_missing"):
             driver.prepare()
         self.assertEqual(sdk.create_calls, 0)
+
+    def test_query_only_connection_requires_target_identity_verifier(self):
+        sdk = FakeSDK()
+        driver = GenLayerSDKDriver(
+            DriverConfig(network="testnet_asimov", private_key="", contract_path=FIXTURE), sdk=sdk)
+        with self.assertRaisesRegex(DriverError, "network_identity_verifier_missing"):
+            driver.prepare_readonly()
+        self.assertEqual(sdk.create_calls, 0)
+        self.assertEqual(sdk.account_calls, 0)
+        self.assertFalse(any(call[0] in {"deploy", "write"} for call in sdk.client.calls))
+
+    def test_false_or_non_boolean_identity_verifier_results_never_authorize_writes(self):
+        for verifier_result in (False, None, 1):
+            sdk=FakeSDK()
+            driver=configured_driver(sdk)
+            driver.network_identity_verifier=lambda *_args, result=verifier_result: result
+            with self.subTest(verifier_result=verifier_result), self.assertRaisesRegex(DriverError,"network_identity_not_verified"):
+                driver.prepare()
+            self.assertEqual(sdk.create_calls,1)
+            self.assertFalse(any(call[0] in {"deploy","write"} for call in sdk.client.calls))
 
     def test_wrong_chain_id_and_funding_fail_before_any_transaction_method(self):
         for client, funding, expected in (
@@ -225,6 +273,126 @@ class GenLayerSDKDriverTests(unittest.TestCase):
             driver._poll(runtime, TX_DEPLOY, lifecycle)
         self.assertIn(("outcome_unknown",), lifecycle.events)
         self.assertFalse(any(call[0] == "write" for call in sdk.client.calls))
+
+    def test_mismatched_or_missing_transaction_reference_fails_closed(self):
+        for transaction, expected in (
+            ({"hash": "0x" + "f" * 64, "status_name": "FINALIZED",
+              "tx_execution_result_name": "FINISHED_WITH_RETURN"}, "transaction_reference_mismatch"),
+            ({"status_name": "FINALIZED", "tx_execution_result_name": "FINISHED_WITH_RETURN"},
+             "transaction_reference_mismatch"),
+            ({"tx_id": "not-a-hash", "status_name": "FINALIZED",
+              "tx_execution_result_name": "FINISHED_WITH_RETURN"}, "transaction_reference_invalid"),
+        ):
+            class MismatchedClient(FakeClient):
+                def get_transaction(self, *, transaction_hash):
+                    self.calls.append(("poll", transaction_hash))
+                    return transaction
+            driver = configured_driver(FakeSDK(MismatchedClient()))
+            runtime = driver.prepare()
+            lifecycle = Lifecycle()
+            with self.subTest(expected=expected), self.assertRaisesRegex(DriverError, expected):
+                driver._poll(runtime, TX_DEPLOY, lifecycle)
+            self.assertIn(("outcome_unknown", "TRANSACTION_REFERENCE_" +
+                           ("INVALID" if expected.endswith("invalid") else "MISMATCH")), lifecycle.events)
+
+    def test_mismatched_finalized_receipt_is_not_used_for_contract_address(self):
+        sdk = FakeSDK()
+        sdk.client.receipt_hash = "0x" + "f" * 64
+        driver = configured_driver(sdk)
+        runtime = driver.prepare()
+        verified = _make_verified_submission(
+            self.submission(), "10000000-0000-4000-8000-000000000001",
+            "10000000-0000-4000-8000-000000000001", "a" * 64,
+            "mandatory_gate_optional_advisory_v1")
+        lifecycle = Lifecycle()
+        with self.assertRaisesRegex(DriverError, "transaction_reference_mismatch"):
+            driver(verified, request_id=verified.request_id, snapshot_id=verified.snapshot_id,
+                   snapshot_sha256=verified.snapshot_sha256, policy_version=verified.policy_version,
+                   lifecycle=lifecycle, runtime=runtime)
+        self.assertFalse(any(call[0] == "write" for call in sdk.client.calls))
+
+    def test_finalized_receipt_must_report_successful_execution(self):
+        for status, execution, expected in (
+            ("PENDING", "FINISHED_WITH_RETURN", "finalized_receipt_status_mismatch"),
+            ("FINALIZED", "NOT_VOTED", "finalized_receipt_execution_unverified"),
+            ("FINALIZED", "FINISHED_WITH_ERROR", "contract_execution_failed"),
+        ):
+            sdk = FakeSDK()
+            sdk.client.receipt_status = status
+            sdk.client.receipt_execution = execution
+            driver = configured_driver(sdk)
+            runtime = driver.prepare()
+            verified = _make_verified_submission(
+                self.submission(), "10000000-0000-4000-8000-000000000001",
+                "10000000-0000-4000-8000-000000000001", "a" * 64,
+                "mandatory_gate_optional_advisory_v1")
+            lifecycle = Lifecycle()
+            with self.subTest(status=status, execution=execution), self.assertRaisesRegex(DriverError, expected):
+                driver(verified, request_id=verified.request_id, snapshot_id=verified.snapshot_id,
+                       snapshot_sha256=verified.snapshot_sha256, policy_version=verified.policy_version,
+                       lifecycle=lifecycle, runtime=runtime)
+            self.assertFalse(any(call[0] == "write" for call in sdk.client.calls))
+
+    def test_finalized_transaction_timeout_and_undetermined_states_are_not_success(self):
+        for status, code in (("CANCELED", "transaction_canceled"),
+                             ("UNDETERMINED", "transaction_undetermined"),
+                             ("VALIDATORS_TIMEOUT", "validators_timeout"),
+                             ("LEADER_TIMEOUT", "leader_timeout")):
+            class TerminalClient(FakeClient):
+                def get_transaction(self, *, transaction_hash):
+                    return {"tx_id": transaction_hash, "status_name": status,
+                            "tx_execution_result_name": "NOT_VOTED"}
+            driver = configured_driver(FakeSDK(TerminalClient()))
+            runtime = driver.prepare()
+            lifecycle = Lifecycle()
+            with self.subTest(status=status), self.assertRaisesRegex(DriverError, code):
+                driver._poll(runtime, TX_DEPLOY, lifecycle)
+            self.assertIn(("failed", code, status), lifecycle.events)
+
+    def test_contract_source_change_after_preflight_blocks_deployment(self):
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", suffix=".py",
+                                         dir=FIXTURE.parent, delete=False) as handle:
+            source_path = Path(handle.name)
+            original = FIXTURE.read_text(encoding="utf-8")
+            handle.write(original)
+        try:
+            sdk = FakeSDK()
+            driver = configured_driver(sdk, contract_path=source_path)
+            runtime = driver.prepare()
+            source_path.write_text(original + "\n# changed after qualification\n", encoding="utf-8")
+            verified = _make_verified_submission(
+                self.submission(), "10000000-0000-4000-8000-000000000001",
+                "10000000-0000-4000-8000-000000000001", "a" * 64,
+                "mandatory_gate_optional_advisory_v1")
+            with self.assertRaisesRegex(DriverError, "contract_source_changed_after_preflight"):
+                driver(verified, request_id=verified.request_id, snapshot_id=verified.snapshot_id,
+                       snapshot_sha256=verified.snapshot_sha256, policy_version=verified.policy_version,
+                       lifecycle=Lifecycle(), runtime=runtime)
+            self.assertFalse(any(call[0] in {"deploy", "write"} for call in sdk.client.calls))
+        finally:
+            source_path.unlink(missing_ok=True)
+
+    def test_prepared_runtime_cannot_be_mutated_or_reused_after_config_replacement(self):
+        driver = configured_driver()
+        runtime = driver.prepare()
+        with self.assertRaises(FrozenInstanceError):
+            runtime.broadcast_ready = False
+        driver.config = DriverConfig(network="testnet_asimov", private_key=KEY,
+                                     broadcast_authorized=False, contract_path=FIXTURE)
+        self.assertFalse(driver._runtime_was_prepared(runtime))
+
+    def test_runtime_capability_cannot_be_reused_across_driver_instances(self):
+        issuing_driver = configured_driver()
+        runtime = issuing_driver.prepare()
+        other_driver = configured_driver()
+        verified = _make_verified_submission(
+            self.submission(), "10000000-0000-4000-8000-000000000001",
+            "10000000-0000-4000-8000-000000000001", "a" * 64,
+            "mandatory_gate_optional_advisory_v1")
+        with self.assertRaisesRegex(DriverError, "runtime_preflight_required"):
+            other_driver(verified, request_id=verified.request_id, snapshot_id=verified.snapshot_id,
+                         snapshot_sha256=verified.snapshot_sha256, policy_version=verified.policy_version,
+                         lifecycle=Lifecycle(), runtime=runtime)
 
     def test_finalized_execution_error_is_not_read_as_a_result(self):
         sdk = FakeSDK(FakeClient(execution="FINISHED_WITH_ERROR"))

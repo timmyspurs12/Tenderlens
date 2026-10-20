@@ -314,6 +314,18 @@ class EvaluationAdapterTests(unittest.TestCase):
         with self.assertRaisesRegex(AdapterError, "lifecycle_reference_conflict"):
             lifecycle.evaluation_submitted(TX_EVAL_B)
 
+    def test_result_reason_must_be_bounded_and_cannot_carry_uncited_evidence_ids(self):
+        snapshot = self.snapshot()
+        prepared = self.adapter.prepare(snapshot["snapshot_id"], "reason-validation")
+        self.submit_refs(prepared["request_id"])
+        for reason, error in (("  ", "malformed_result_decision"),
+                              ("x" * 2001, "malformed_result_decision"),
+                              ("Unsupported source 50000000-0000-4000-8000-000000000001", "result_reason_contains_unsupported_evidence_id")):
+            result = json.loads(self.result_for(prepared))
+            result["decisions"][0]["reason"] = reason
+            with self.subTest(error=error), self.assertRaisesRegex(AdapterError, error):
+                self.adapter.accept_result(prepared["request_id"], ADDRESS_A, TX_EVAL_A, json.dumps(result))
+
     def test_result_must_match_request_snapshot_policy_and_actual_recorded_refs(self):
         snapshot = self.snapshot()
         prepared = self.adapter.prepare(snapshot["snapshot_id"], "result")

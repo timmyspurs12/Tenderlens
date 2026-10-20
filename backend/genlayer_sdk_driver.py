@@ -9,6 +9,7 @@ one immutable submission; there is no reusable configured contract address.
 from __future__ import annotations
 
 import copy
+import hashlib
 import importlib
 import importlib.metadata
 import json
@@ -59,7 +60,7 @@ class DriverConfig:
         )
 
 
-@dataclass
+@dataclass(frozen=True)
 class Runtime:
     client: Any = field(repr=False)
     account: Any = field(repr=False)
@@ -68,30 +69,40 @@ class Runtime:
     network: str
     broadcast_ready: bool
     sdk: Any = field(repr=False)
+    _gate_token: object = field(repr=False, compare=False)
+    _config_token: DriverConfig = field(repr=False, compare=False)
+    contract_source_sha256: str | None = None
 
 
 class GenLayerSDKDriver:
     """Deploy, execute, poll and decode through the verified genlayer-py API.
 
-    ``runtime_qualifier`` must confirm the exact dependency reference on the target
-    GenVM/WASM environment. ``funding_verifier`` must assess target-specific expected
-    deployment and execution costs; genlayer-py 0.18.0 has no high-level GenLayer fee
-    estimator that can establish this itself. Both are required before a client is
-    created. No network call is made by construction or ordinary tests.
+    ``network_identity_verifier`` must confirm the selected remote deployment in
+    both read-only and broadcast contexts. ``runtime_qualifier`` must confirm the
+    exact dependency reference on the target GenVM/WASM environment. For broadcast,
+    ``funding_verifier`` must assess target-specific expected deployment and execution
+    costs; genlayer-py 0.18.0 has no high-level GenLayer fee estimator that can establish
+    this itself. All three are injected gates, not built-in evidence. No network call
+    is made by construction or ordinary tests.
     """
 
     def __init__(self, config: DriverConfig, *, runtime_qualifier: Callable[[str, str], bool] | None = None,
+                 network_identity_verifier: Callable[[Any, Any, str], bool] | None = None,
                  funding_verifier: Callable[[Any, Any, str], bool] | None = None, sdk: Any = None,
                  sleep: Callable[[float], None] = time.sleep):
         self.config = config
         self.runtime_qualifier = runtime_qualifier
+        self.network_identity_verifier = network_identity_verifier
         self.funding_verifier = funding_verifier
         self._sdk = sdk
         self._sleep = sleep
+        self._runtime_gate_token = object()
 
     @classmethod
-    def from_environment(cls, *, environ=None, runtime_qualifier=None, funding_verifier=None, sdk=None):
+    def from_environment(cls, *, environ=None, runtime_qualifier=None, network_identity_verifier=None,
+                         funding_verifier=None, sdk=None):
         return cls(DriverConfig.from_environment(environ), runtime_qualifier=runtime_qualifier,
+                   network_identity_verifier=network_identity_verifier,
                    funding_verifier=funding_verifier, sdk=sdk)
 
     def _load_sdk(self):
@@ -120,16 +131,22 @@ class GenLayerSDKDriver:
         cfg = self.config
         if cfg.network not in NETWORK_NAMES:
             raise DriverError("unsupported_network")
-        if not isinstance(cfg.private_key, str) or not re.fullmatch(r"(?:0x)?[0-9a-fA-F]{64}", cfg.private_key):
+        if require_broadcast and (not isinstance(cfg.private_key, str)
+                                  or not re.fullmatch(r"(?:0x)?[0-9a-fA-F]{64}", cfg.private_key)):
             raise DriverError("invalid_account_configuration")
         if cfg.poll_interval_seconds <= 0 or cfg.max_polls < 1:
             raise DriverError("invalid_poll_configuration")
+        if require_broadcast:
+            if not cfg.broadcast_authorized:
+                raise DriverError("broadcast_not_authorized")
+            if not callable(self.runtime_qualifier) or not callable(self.funding_verifier):
+                raise DriverError("runtime_or_funding_qualification_missing")
+        elif not callable(self.network_identity_verifier):
+            raise DriverError("network_identity_verifier_missing")
+        if require_broadcast and not callable(self.network_identity_verifier):
+            raise DriverError("network_identity_verifier_missing")
         if not require_broadcast:
             return None
-        if not cfg.broadcast_authorized:
-            raise DriverError("broadcast_not_authorized")
-        if not callable(self.runtime_qualifier) or not callable(self.funding_verifier):
-            raise DriverError("runtime_or_funding_qualification_missing")
         try:
             source_path = Path(cfg.contract_path).resolve(strict=True)
             source_path.relative_to(REPOSITORY_ROOT)
@@ -150,7 +167,7 @@ class GenLayerSDKDriver:
             raise DriverError("runtime_not_qualified")
         return source
 
-    def _connect(self, *, broadcast_ready: bool) -> Runtime:
+    def _connect(self, *, broadcast_ready: bool, contract_source: str | None = None) -> Runtime:
         sdk = self._load_sdk()
         if getattr(sdk, "version", SDK_VERSION) != SDK_VERSION:
             raise DriverError("pinned_sdk_version_mismatch")
@@ -160,7 +177,9 @@ class GenLayerSDKDriver:
             endpoint = chain.rpc_urls["default"]["http"][0]
             if self.config.rpc_url is not None and self.config.rpc_url != endpoint:
                 raise DriverError("rpc_endpoint_not_pinned")
-            account = sdk.create_account(account_private_key=self.config.private_key)
+            # The pinned SDK accepts account=None. Query-only recovery therefore
+            # does not need to derive/import a signer from TENDERLENS_GENLAYER_PRIVATE_KEY.
+            account = sdk.create_account(account_private_key=self.config.private_key) if broadcast_ready else None
             # SDK client initialization may perform read-only RPC calls. It is only
             # invoked by an explicit submit/reconcile operation, never by module import.
             client = sdk.create_client(chain=chain, endpoint=endpoint, account=account)
@@ -171,6 +190,14 @@ class GenLayerSDKDriver:
             raise DriverError("network_preflight_failed") from None
         if observed_chain_id != chain_id:
             raise DriverError("network_chain_id_mismatch")
+        if not callable(self.network_identity_verifier):
+            raise DriverError("network_identity_verifier_missing")
+        try:
+            identity_verified = self.network_identity_verifier(client, chain, self.config.network)
+        except Exception:
+            raise DriverError("network_identity_verification_failed") from None
+        if identity_verified is not True:
+            raise DriverError("network_identity_not_verified")
         if broadcast_ready:
             try:
                 funded = self.funding_verifier(client, account, self.config.network)
@@ -179,21 +206,70 @@ class GenLayerSDKDriver:
             if funded is not True:
                 raise DriverError("funding_not_verified")
         return Runtime(client=client, account=account, chain=chain, chain_id=chain_id,
-                       network=self.config.network, broadcast_ready=broadcast_ready, sdk=sdk)
+                       network=self.config.network, broadcast_ready=broadcast_ready, sdk=sdk,
+                       _gate_token=self._runtime_gate_token, _config_token=self.config,
+                       contract_source_sha256=(hashlib.sha256(contract_source.encode("utf-8")).hexdigest()
+                                               if contract_source is not None else None))
 
     def prepare(self) -> Runtime:
         """Validate broadcast prerequisites, then initialize/check SDK and funding."""
-        self._static_preflight(require_broadcast=True)
-        return self._connect(broadcast_ready=True)
+        source = self._static_preflight(require_broadcast=True)
+        return self._connect(broadcast_ready=True, contract_source=source)
 
     def prepare_readonly(self) -> Runtime:
-        """Connect for query/recovery without broadcast authorization or funding checks."""
+        """Connect for query/recovery without a signer, broadcast, or funding gate.
+
+        The target identity callback remains mandatory: read-only queries against a
+        misidentified endpoint can still corrupt local transaction/result association.
+        """
         self._static_preflight(require_broadcast=False)
         return self._connect(broadcast_ready=False)
+
+    def _runtime_was_prepared(self, runtime: Runtime) -> bool:
+        return (isinstance(runtime, Runtime)
+                and runtime._gate_token is self._runtime_gate_token
+                and runtime._config_token is self.config
+                and runtime.network == self.config.network)
 
     @staticmethod
     def _enum_text(value):
         return getattr(value, "value", value) if value is not None else None
+
+    @classmethod
+    def _verify_finalized_success(cls, receipt: Any, lifecycle: SubmissionLifecycle) -> None:
+        if not isinstance(receipt, dict):
+            lifecycle.outcome_unknown("FINALIZED_RECEIPT_UNVERIFIED")
+            raise DriverError("finalized_receipt_unverified")
+        status = cls._enum_text(receipt.get("status_name"))
+        execution = cls._enum_text(receipt.get("tx_execution_result_name"))
+        if status != "FINALIZED":
+            lifecycle.outcome_unknown("FINALIZED_RECEIPT_STATUS_MISMATCH")
+            raise DriverError("finalized_receipt_status_mismatch")
+        if execution == "FINISHED_WITH_ERROR":
+            lifecycle.failed("contract_execution_failed", status)
+            raise DriverError("contract_execution_failed")
+        if execution != "FINISHED_WITH_RETURN":
+            lifecycle.outcome_unknown("FINALIZED_RECEIPT_EXECUTION_UNVERIFIED")
+            raise DriverError("finalized_receipt_execution_unverified")
+
+    @staticmethod
+    def _verify_transaction_reference(transaction: Any, expected_hash: str,
+                                      lifecycle: SubmissionLifecycle) -> None:
+        """Require the pinned SDK's returned hash/tx_id to match the queried ID."""
+        if not isinstance(transaction, dict):
+            lifecycle.outcome_unknown("TRANSACTION_REFERENCE_UNVERIFIED")
+            raise DriverError("transaction_reference_unverified")
+        references = []
+        for field_name in ("hash", "tx_id"):
+            if field_name in transaction and transaction[field_name] is not None:
+                value = transaction[field_name]
+                if not isinstance(value, str) or not TX_HASH.fullmatch(value):
+                    lifecycle.outcome_unknown("TRANSACTION_REFERENCE_INVALID")
+                    raise DriverError("transaction_reference_invalid")
+                references.append(value.lower())
+        if not references or any(value != expected_hash.lower() for value in references):
+            lifecycle.outcome_unknown("TRANSACTION_REFERENCE_MISMATCH")
+            raise DriverError("transaction_reference_mismatch")
 
     def _poll(self, runtime: Runtime, tx_hash: str, lifecycle: SubmissionLifecycle):
         for _ in range(self.config.max_polls):
@@ -207,6 +283,7 @@ class GenLayerSDKDriver:
                 lifecycle.pending("NOT_FOUND")
                 self._sleep(self.config.poll_interval_seconds)
                 continue
+            self._verify_transaction_reference(tx, tx_hash, lifecycle)
             status = self._enum_text(tx.get("status_name"))
             execution = self._enum_text(tx.get("tx_execution_result_name"))
             if status == "FINALIZED":
@@ -217,9 +294,16 @@ class GenLayerSDKDriver:
                     raise DriverError("contract_execution_failed")
                 lifecycle.outcome_unknown(status)
                 raise DriverError("finalized_execution_result_unrecognized")
-            if status == "CANCELED":
-                lifecycle.failed("transaction_canceled", status)
-                raise DriverError("transaction_canceled")
+            terminal_failures = {
+                "CANCELED": "transaction_canceled",
+                "UNDETERMINED": "transaction_undetermined",
+                "VALIDATORS_TIMEOUT": "validators_timeout",
+                "LEADER_TIMEOUT": "leader_timeout",
+            }
+            if status in terminal_failures:
+                code = terminal_failures[status]
+                lifecycle.failed(code, status)
+                raise DriverError(code)
             lifecycle.pending(status or "UNRECOGNIZED")
             self._sleep(self.config.poll_interval_seconds)
         lifecycle.outcome_unknown()
@@ -246,7 +330,9 @@ class GenLayerSDKDriver:
                 or verified_input.snapshot_sha256 != snapshot_sha256
                 or verified_input.policy_version != policy_version):
             raise DriverError("verified_submission_identity_mismatch")
-        if runtime is None or not runtime.broadcast_ready:
+        if runtime is None or not self._runtime_was_prepared(runtime):
+            raise DriverError("runtime_preflight_required")
+        if not runtime.broadcast_ready:
             raise DriverError("broadcast_preflight_required")
         submission_json = verified_input.contract_input_json
         try:
@@ -257,8 +343,15 @@ class GenLayerSDKDriver:
                 or submission.get("snapshot_sha256") != snapshot_sha256
                 or submission.get("aggregation_policy") != policy_version):
             raise DriverError("verified_submission_identity_mismatch")
+        try:
+            source = Path(self.config.contract_path).read_text(encoding="utf-8")
+        except OSError:
+            raise DriverError("contract_source_unavailable") from None
+        current_source_hash = hashlib.sha256(source.encode("utf-8")).hexdigest()
+        if (runtime.contract_source_sha256 is None
+                or current_source_hash != runtime.contract_source_sha256):
+            raise DriverError("contract_source_changed_after_preflight")
         lifecycle.record_network(runtime.network, runtime.chain_id)
-        source = Path(self.config.contract_path).read_text(encoding="utf-8")
         lifecycle.deployment_started()
         try:
             deployment_hash = runtime.client.deploy_contract(code=source, account=runtime.account,
@@ -280,6 +373,8 @@ class GenLayerSDKDriver:
         except Exception:
             lifecycle.outcome_unknown("FINALIZED_RECEIPT_UNAVAILABLE")
             raise DriverError("deployment_receipt_unavailable") from None
+        self._verify_transaction_reference(deployed, deployment_hash, lifecycle)
+        self._verify_finalized_success(deployed, lifecycle)
         contract_address = self._contract_address(runtime, deployed)
         lifecycle.deployment_finalized(contract_address)
 
@@ -311,6 +406,8 @@ class GenLayerSDKDriver:
         """Query durable hashes; broadcasting the next safe phase requires ``resume=True``."""
         if runtime is None:
             runtime = self.prepare() if resume else self.prepare_readonly()
+        if not self._runtime_was_prepared(runtime):
+            raise DriverError("runtime_preflight_required")
         if resume and not runtime.broadcast_ready:
             raise DriverError("broadcast_preflight_required")
         request = adapter.get_request(request_id)
@@ -348,6 +445,8 @@ class GenLayerSDKDriver:
             except Exception:
                 lifecycle.outcome_unknown("FINALIZED_RECEIPT_UNAVAILABLE")
                 raise DriverError("deployment_receipt_unavailable") from None
+            self._verify_transaction_reference(receipt, deployment_hash, lifecycle)
+            self._verify_finalized_success(receipt, lifecycle)
             contract_address = self._contract_address(runtime, receipt)
             lifecycle.deployment_finalized(contract_address)
         else:

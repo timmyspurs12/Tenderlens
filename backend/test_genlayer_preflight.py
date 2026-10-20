@@ -68,6 +68,8 @@ class GenLayerPreflightTests(unittest.TestCase):
         self.assertEqual(self.by_id(report, "runtime.artifact_immutability")["status"], "blocked")
         self.assertEqual(self.by_id(report, "runtime.target_compatibility")["status"], "unknown")
         self.assertEqual(self.by_id(report, "target.remote_identity")["status"], "unknown")
+        self.assertEqual(self.by_id(report, "target.identity_verifier_gate_present")["status"], "verified")
+        self.assertEqual(self.by_id(report, "target.identity_verifier_availability")["status"], "blocked")
 
     def test_locked_local_dependencies_and_local_syntax_are_classified_without_runtime_claims(self):
         report = self.report()

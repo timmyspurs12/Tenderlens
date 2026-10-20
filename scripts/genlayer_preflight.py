@@ -39,6 +39,8 @@ REQUIRED_PROJECT_FILES = (
     Path("backend/genlayer_sdk_driver.py"),
     Path("scripts/genlayer_preflight.py"),
     Path("tests/genlayer_direct/contracts/procurement_evaluation.py"),
+    Path("tests/genlayer_direct/test_procurement_evaluation.py"),
+    Path("backend/test_api.py"),
     Path("backend/test_genlayer_preflight.py"),
     Path("backend/test_evaluation_adapter.py"),
     Path("backend/test_genlayer_sdk_driver.py"),
@@ -366,6 +368,24 @@ def collect_report(root: Path, env: dict[str, str], *, versions: dict[str, str |
     driver_source = driver_text
     app_bytes = _safe_read(root, Path("backend/app.py"))
     app_source = app_bytes.decode("utf-8", "replace") if app_bytes else ""
+    has_identity_gate = ("network_identity_verifier" in driver_source
+                         and "network_identity_verifier_missing" in driver_source
+                         and "network_identity_not_verified" in driver_source)
+    checks.append(_check(
+        "target.identity_verifier_gate_present", "verified" if has_identity_gate else "blocked",
+        "The driver requires a target-identity verifier for both broadcast and query-only SDK clients." if has_identity_gate else "The driver does not fail closed on missing target-identity verification.",
+        "Local driver source inspection only; the callback is not invoked and its presence does not authenticate an endpoint.",
+        "Keep identity verification mandatory for read and write contexts; do not treat a callback's presence or boolean as proof.",
+        requires_user_action=False, resolution_scope="local_action",
+    ))
+    identity_provider_wired = "GenLayerSDKDriver" in app_source and "network_identity_verifier" in app_source
+    checks.append(_check(
+        "target.identity_verifier_availability", "verified" if identity_provider_wired else "blocked",
+        "A target-specific identity-verification provider is " + ("wired into the application." if identity_provider_wired else "not implemented or wired into the application."),
+        "Static inspection of backend/app.py; no driver, callback, endpoint, or network was instantiated.",
+        "Maintainer must supply an authoritative, version-specific identity procedure for the selected target and wire it without making the preflight contact RPC.",
+        requires_user_action=True, resolution_scope="external_action", owner="repository_maintainer",
+    ))
     has_runtime_gate = "runtime_qualifier" in driver_source and "runtime_not_qualified" in driver_source
     checks.append(_check(
         "runtime.qualification_gate_present", "verified" if has_runtime_gate else "blocked",
@@ -408,7 +428,9 @@ def collect_report(root: Path, env: dict[str, str], *, versions: dict[str, str |
 
     workflow_bytes = _safe_read(root, Path(".github/workflows/tenderlens-checks.yml"))
     workflow_text = workflow_bytes.decode("utf-8", "replace") if workflow_bytes else ""
+    api_tests = _safe_read(root, Path("backend/test_api.py"))
     adapter_tests = _safe_read(root, Path("backend/test_evaluation_adapter.py"))
+    direct_contract_tests = _safe_read(root, Path("tests/genlayer_direct/test_procurement_evaluation.py"))
     driver_tests = _safe_read(root, Path("backend/test_genlayer_sdk_driver.py"))
     preflight_tests = _safe_read(root, Path("backend/test_genlayer_preflight.py"))
     workflow_has_backend = "backend.test_evaluation_adapter" in workflow_text and "backend.test_genlayer_sdk_driver" in workflow_text
@@ -420,9 +442,28 @@ def collect_report(root: Path, env: dict[str, str], *, versions: dict[str, str |
     binding_tests_present = bool(driver_tests and b"test_driver_rejects_caller_supplied_raw_payload" in driver_tests and b"test_broadcast_requires_explicit_authorization_before_client_or_rpc" in driver_tests)
     snapshot_integrity_tests_present = bool(adapter_tests and b"test_payload_digest_relationship_is_checked_before_constructor_input" in adapter_tests and b"test_policy_mismatch_unsupported_schema_and_malformed_snapshot_are_rejected" in adapter_tests and b"test_modified_row_with_invalid_hmac_fails_closed" in adapter_tests)
     readonly_recovery_test_present = bool(driver_tests and b"test_readonly_recovery_context_needs_no_broadcast_or_funding_gate" in driver_tests)
+    identity_and_result_tests_present = bool(
+        api_tests and b"test_json_request_rejects_duplicate_object_keys" in api_tests
+        and b"test_factory_uses_only_server_environment_and_injected_submitter_for_broadcast_gate" in api_tests
+        and b"test_submit_route_keeps_authentication_and_maps_request_conflicts" in api_tests
+        and b"test_invalid_finalized_result_is_durable_and_never_reported_as_unknown_or_completed" in api_tests
+        and direct_contract_tests and b"test_utf8_encoded_submission_size_limit_is_enforced" in direct_contract_tests
+        and b"test_oversized_result_fails_without_committing_a_partial_evaluation" in direct_contract_tests
+        and driver_tests and b"test_query_only_connection_requires_target_identity_verifier" in driver_tests
+        and b"test_false_or_non_boolean_runtime_qualification_never_reaches_sdk" in driver_tests
+        and b"test_false_or_non_boolean_identity_verifier_results_never_authorize_writes" in driver_tests
+        and b"test_mismatched_or_missing_transaction_reference_fails_closed" in driver_tests
+        and b"test_mismatched_finalized_receipt_is_not_used_for_contract_address" in driver_tests
+        and b"test_finalized_receipt_must_report_successful_execution" in driver_tests
+        and b"test_finalized_transaction_timeout_and_undetermined_states_are_not_success" in driver_tests
+        and b"test_prepared_runtime_cannot_be_mutated_or_reused_after_config_replacement" in driver_tests
+        and b"test_contract_source_change_after_preflight_blocks_deployment" in driver_tests
+        and adapter_tests and b"test_result_reason_must_be_bounded_and_cannot_carry_uncited_evidence_ids" in adapter_tests
+    )
     tests_covered = (workflow_has_backend and workflow_has_preflight and workflow_has_direct and lifecycle_tests_present
                      and adapter_tests_present and preflight_tests_present and binding_tests_present
-                     and snapshot_integrity_tests_present and readonly_recovery_test_present)
+                     and snapshot_integrity_tests_present and readonly_recovery_test_present
+                     and identity_and_result_tests_present)
     checks.append(_check(
         "tests.ci_coverage_configuration", "verified" if tests_covered else "blocked",
         "Local CI configuration includes backend/adapter/preflight/driver tests plus checked test cases for capability binding, snapshot integrity/schema/policy, result association, durable lifecycle, query-only recovery, and Direct Mode." if tests_covered else "One or more relevant backend, binding, lifecycle, recovery, preflight, or Direct Mode tests are absent from the local CI workflow.",

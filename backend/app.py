@@ -52,17 +52,26 @@ def snapshot_payload_matches(payload, snapshot_id, input_sha256) -> bool:
 def clean_text(v, field, limit):
     if not isinstance(v,str) or not v.strip() or len(v.strip())>limit: raise ValueError(f"{field} must be a non-empty string of at most {limit} characters")
     return v.strip()
+def _reject_duplicate_json_keys(pairs):
+    result={}
+    for key,value in pairs:
+        if key in result: raise ValueError("JSON object contains duplicate keys")
+        result[key]=value
+    return result
 def only_keys(body, allowed):
     unknown=set(body)-set(allowed)
     if unknown: raise ValueError("Unexpected field(s): "+", ".join(sorted(unknown)))
 
 class TenderLensAPI:
-    def __init__(self, db_path: str|Path, blob_dir: str|Path, token: str, workspace: str="default", snapshot_hmac_key: str|None=None):
+    def __init__(self, db_path: str|Path, blob_dir: str|Path, token: str, workspace: str="default", snapshot_hmac_key: str|None=None,
+                 *, evaluation_submitter=None, broadcast_authorized: bool=False):
         if len(token)<32: raise ValueError("TENDERLENS_API_TOKEN must contain at least 32 characters")
         key=snapshot_hmac_key or os.environ.get("TENDERLENS_SNAPSHOT_HMAC_KEY") or token
         if len(key)<32: raise ValueError("TENDERLENS_SNAPSHOT_HMAC_KEY must contain at least 32 characters when configured")
         self.db_path=Path(db_path); self.blob_dir=Path(blob_dir); self.db_path.parent.mkdir(parents=True,exist_ok=True,mode=0o700); self.blob_dir.mkdir(parents=True,exist_ok=True,mode=0o700); os.chmod(self.db_path.parent,0o700); os.chmod(self.blob_dir,0o700)
         self.token=token; self.workspace=workspace; self.snapshot_hmac_key=key.encode("utf-8")
+        self.evaluation_submitter=evaluation_submitter
+        self.broadcast_authorized=broadcast_authorized is True
         with self.db() as c:
             c.executescript(SCHEMA)
             self.migrate_evaluation_request_ledger(c)
@@ -128,7 +137,7 @@ class TenderLensAPI:
     @staticmethod
     def respond(start_response,status,body,trace=""):
         raw=b"" if status==204 else json.dumps(body,separators=(",",":"),ensure_ascii=False).encode()
-        phrase={200:"OK",201:"Created",204:"No Content",400:"Bad Request",401:"Unauthorized",404:"Not Found",409:"Conflict",413:"Content Too Large",415:"Unsupported Media Type",500:"Internal Server Error"}.get(status,"Error")
+        phrase={200:"OK",201:"Created",202:"Accepted",204:"No Content",400:"Bad Request",401:"Unauthorized",404:"Not Found",409:"Conflict",413:"Content Too Large",415:"Unsupported Media Type",500:"Internal Server Error",502:"Bad Gateway",503:"Service Unavailable"}.get(status,"Error")
         headers=[("Content-Length",str(len(raw))),("Cache-Control","no-store"),("X-Content-Type-Options","nosniff")]
         if status!=204: headers.append(("Content-Type","application/json; charset=utf-8"))
         if trace: headers.append(("X-Request-ID",trace))
@@ -137,7 +146,7 @@ class TenderLensAPI:
         try:
             n=int(e.get("CONTENT_LENGTH") or 0)
             if n<1 or n>65536: raise ValueError("JSON body must be between 1 byte and 64 KiB")
-            body=json.loads(e["wsgi.input"].read(n))
+            body=json.loads(e["wsgi.input"].read(n),object_pairs_hook=_reject_duplicate_json_keys)
             if not isinstance(body,dict): raise ValueError("JSON body must be an object")
             return body
         except (json.JSONDecodeError,UnicodeDecodeError): raise ValueError("Malformed JSON body")
@@ -154,6 +163,31 @@ class TenderLensAPI:
             record={"id":uid(),"title":title,"reference":ref,"deadline":deadline,"created_at":now()}
             with self.db() as c: c.execute("INSERT INTO tenders VALUES(?,?,?,?,?,?)",(record["id"],self.workspace,title,ref,deadline,record["created_at"]))
             return 201,record
+        request_match=re.fullmatch(r"/api/evaluation-requests/([^/]+)",p)
+        if request_match:
+            if m!="GET": return err(404,"not_found","Route not found.")
+            from backend.evaluation_adapter import AdapterError, EvaluationAdapter
+            adapter=EvaluationAdapter(self)
+            try:
+                request=adapter.get_request(request_match.group(1))
+            except AdapterError:
+                return err(404,"not_found","Evaluation request not found.")
+            if request.get("failure_code")=="result_verification_failed":
+                return 502,{"error":{"code":"result_verification_failed","message":"The finalized evaluation result failed verification."},"request":request}
+            if request["status"]=="completed":
+                try: result=adapter.get_result(request["request_id"])
+                except AdapterError: return 500,{"error":{"code":"result_verification_failed","message":"Stored evaluation result failed verification."},"request":request}
+            else:
+                result=None
+            return 200,{"request":request,"result":result}
+        submit_match=re.fullmatch(r"/api/tenders/([^/]+)/evaluation-snapshots/([^/]+)/submit",p)
+        if submit_match:
+            tid,snapshot_id=submit_match.groups()
+            with self.db() as c:
+                if self.tender(c,tid) is None: return err(404,"not_found","Tender not found.")
+            # Release the route's DB connection before the adapter or SDK performs
+            # any work; no SQLite transaction/lock is held over a network operation.
+            return self.submit_evaluation(tid,snapshot_id,e)
         snapshot_match=re.fullmatch(r"/api/tenders/([^/]+)/evaluation-snapshots(?:/([^/]+))?",p)
         if snapshot_match:
             tid,snapshot_id=snapshot_match.groups()
@@ -172,6 +206,70 @@ class TenderLensAPI:
             if resource=="requirements": return self.requirements(c,m,tid,e)
             if resource=="evidence": return self.evidence(c,m,tid,e)
         return err(404,"not_found","Route not found.")
+    def submit_evaluation(self,tid,snapshot_id,e):
+        if e.get("REQUEST_METHOD")!="POST": return err(404,"not_found","Route not found.")
+        if not self.broadcast_authorized or self.evaluation_submitter is None:
+            return err(503,"submission_disabled","Evaluation submission is disabled by server configuration.")
+        body=self.body_json(e); only_keys(body,{"idempotency_key"})
+        idempotency_key=clean_text(body.get("idempotency_key"),"idempotency_key",128)
+        if not valid_id(snapshot_id): return err(404,"not_found","Evaluation snapshot not found.")
+        with self.db() as c:
+            snapshot=c.execute("SELECT * FROM evaluation_snapshots WHERE id=? AND tender_id=? AND workspace=?",
+                               (snapshot_id,tid,self.workspace)).fetchone()
+            if snapshot is None: return err(404,"not_found","Evaluation snapshot not found.")
+            if not self.snapshot_row_is_valid(snapshot): return err(500,"integrity_failure","Stored evaluation snapshot failed integrity verification.")
+        from backend.evaluation_adapter import AdapterError, EvaluationAdapter
+        adapter=EvaluationAdapter(self)
+        try:
+            prepared=adapter.prepare(snapshot_id,idempotency_key)
+        except AdapterError as exc:
+            code=str(exc)
+            if code in {"idempotency_key_conflict","snapshot_already_requested"}:
+                return err(409,code,"The idempotency key or snapshot is already associated with another request.")
+            if code=="snapshot_not_found":
+                return err(404,"not_found","Evaluation snapshot not found.")
+            if code in {"integrity_failure","snapshot_changed_during_retrieval","snapshot_changed_since_request","snapshot_verification_failed"}:
+                return err(500,"integrity_failure","The stored evaluation snapshot failed verification.")
+            return err(400,"submission_input_rejected","The stored snapshot or idempotency request failed validation.")
+
+        def request_state():
+            try: return adapter.get_request(prepared["request_id"])
+            except Exception: return None
+
+        try:
+            adapter.submit(snapshot_id,idempotency_key,self.evaluation_submitter)
+        except AdapterError as exc:
+            code=str(exc)
+            request=request_state()
+            if code=="result_verification_failed":
+                return 502,{"error":{"code":code,"message":"The finalized evaluation result failed verification."},"request":request}
+            if code in {"idempotency_key_conflict","snapshot_already_requested"}:
+                status=409; public_code=code
+            elif code in {"submission_failed","submission_preflight_failed"}:
+                status=503; public_code="submission_unavailable"
+            else:
+                status=409; public_code="submission_outcome_unknown"
+            return status,{"error":{"code":public_code,"message":"Evaluation was not confirmed complete; inspect the durable request state before any operator action."},"request":request}
+        except Exception:
+            request=request_state()
+            if request is not None and request["lifecycle_state"]=="prepared":
+                return 503,{"error":{"code":"submission_preflight_failed","message":"Evaluation submission prerequisites could not be verified."},"request":request}
+            return 409,{"error":{"code":"submission_outcome_unknown","message":"Evaluation may have advanced; inspect the durable request state before any operator action."},"request":request}
+
+        try:
+            request=adapter.get_request(prepared["request_id"])
+        except Exception:
+            return 500,{"error":{"code":"request_state_unavailable","message":"Submission state could not be retrieved; do not retry without operator reconciliation."},"request_id":prepared["request_id"]}
+        if request.get("failure_code")=="result_verification_failed":
+            return 502,{"error":{"code":"result_verification_failed","message":"The finalized evaluation result failed verification."},"request":request}
+        if request["status"]=="completed":
+            try: result=adapter.get_result(prepared["request_id"])
+            except AdapterError:
+                return 500,{"error":{"code":"result_verification_failed","message":"Stored evaluation result failed verification."},"request":request}
+        else:
+            result=None
+        return (200 if request["status"]=="completed" else 202),{"request":request,"result":result}
+
     def evaluation_snapshots(self,c,m,tid,snapshot_id,e):
         if m=="GET":
             if snapshot_id is None:
@@ -216,7 +314,7 @@ class TenderLensAPI:
         digest=canonical_snapshot_digest(base)
         submission={**base,"snapshot_sha256":digest}
         payload=json.dumps(submission,sort_keys=True,separators=(",",":"),ensure_ascii=False)
-        if len(payload)>250000: raise ValueError("Evaluation snapshot exceeds the 250000-character contract limit")
+        if len(payload.encode("utf-8"))>250000: raise ValueError("Evaluation snapshot exceeds the 250000-byte contract limit")
         created_at=now()
         auth_tag=self.snapshot_auth_tag(submission["snapshot_id"],tid,self.workspace,digest,payload,created_at)
         c.execute("INSERT INTO evaluation_snapshots(id,tender_id,workspace,input_sha256,payload_json,created_at,auth_tag) VALUES(?,?,?,?,?,?,?)",(submission["snapshot_id"],tid,self.workspace,digest,payload,created_at,auth_tag))
@@ -302,10 +400,14 @@ class TenderLensAPI:
         c.execute("INSERT INTO evidence VALUES(?,?,?,?,?,?,?,?,?,?,?)",(record["id"],tid,self.workspace,req,doc,d["sha256"],start,end,excerpt,json.dumps(provenance),record["created_at"]))
         return 201,record
 
-def create_app():
+def create_app(*, evaluation_submitter=None):
     token=os.environ.get("TENDERLENS_API_TOKEN","")
     db=os.environ.get("TENDERLENS_DB_PATH","./var/tenderlens.sqlite3"); blobs=os.environ.get("TENDERLENS_BLOB_DIR","./var/documents")
-    return TenderLensAPI(db,blobs,token,os.environ.get("TENDERLENS_WORKSPACE","default"))
+    # This server-only flag cannot be supplied or overridden by an API request.
+    # A missing submitter or any missing driver qualification gate still blocks writes.
+    broadcast_authorized=os.environ.get("TENDERLENS_GENLAYER_BROADCAST_AUTHORIZED")=="1"
+    return TenderLensAPI(db,blobs,token,os.environ.get("TENDERLENS_WORKSPACE","default"),
+                         evaluation_submitter=evaluation_submitter,broadcast_authorized=broadcast_authorized)
 if __name__=="__main__":
     app=create_app(); host=os.environ.get("TENDERLENS_HOST","127.0.0.1"); port=int(os.environ.get("TENDERLENS_PORT","8000"))
     with make_server(host,port,app) as server: print(f"TenderLens API listening on {host}:{port}"); server.serve_forever()

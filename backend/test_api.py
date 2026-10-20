@@ -1,6 +1,30 @@
-import hashlib, io, json, sqlite3, tempfile, unittest
+import hashlib, io, json, os, sqlite3, tempfile, unittest
 from pathlib import Path
-from backend.app import TenderLensAPI, canonical_snapshot_digest
+from unittest.mock import patch
+from backend.app import TenderLensAPI, canonical_snapshot_digest, create_app
+
+class FakeEvaluationSubmitter:
+    def __init__(self): self.calls=0
+    def prepare(self): return object()
+    def __call__(self, verified_input, *, request_id, snapshot_id, snapshot_sha256, policy_version, lifecycle, runtime):
+        self.calls+=1
+        assert verified_input.snapshot_id==snapshot_id
+        lifecycle.record_network("studionet",61999)
+        lifecycle.deployment_started()
+        lifecycle.deployment_submitted("0x"+"1"*64)
+        lifecycle.deployment_finalized("0x"+"a"*40)
+        lifecycle.evaluation_started()
+        lifecycle.evaluation_submitted("0x"+"2"*64)
+        lifecycle.finalized()
+        return {"contract_address":"0x"+"a"*40,"deployment_tx_hash":"0x"+"1"*64,
+                "evaluation_tx_hash":"0x"+"2"*64}
+
+class InvalidResultSubmitter(FakeEvaluationSubmitter):
+    def __call__(self, *args, **kwargs):
+        outcome=super().__call__(*args, **kwargs)
+        outcome.update(result_json='{"schema_version":"untrusted"}',
+                       result_reference="0x"+"2"*64)
+        return outcome
 
 class BackendAPITest(unittest.TestCase):
     def setUp(self):
@@ -49,6 +73,133 @@ class BackendAPITest(unittest.TestCase):
     def test_rejects_cross_tender_evidence_links(self):
         a=self.create_tender(); _,b,_=self.call('POST','/api/tenders',{'title':'Other','reference':'REF-OTHER'}); _,d,_=self.upload(a,b'actual text')
         status,r,_=self.call('POST',f"/api/tenders/{b['id']}/evidence",{'document_id':d['id'],'start_byte':0,'end_byte':6}); self.assertEqual(status,400); self.assertEqual(r['error']['code'],'invalid_document')
+    def test_factory_uses_only_server_environment_and_injected_submitter_for_broadcast_gate(self):
+        root=Path(self.tmp.name)/'factory'
+        environment={
+            'TENDERLENS_API_TOKEN':'s'*48,
+            'TENDERLENS_WORKSPACE':'factory-workspace',
+            'TENDERLENS_DB_PATH':str(root/'db.sqlite'),
+            'TENDERLENS_BLOB_DIR':str(root/'blobs'),
+            'TENDERLENS_GENLAYER_BROADCAST_AUTHORIZED':'1',
+        }
+        submitter=FakeEvaluationSubmitter()
+        with patch.dict(os.environ,environment,clear=True):
+            authorized=create_app(evaluation_submitter=submitter)
+            self.assertTrue(authorized.broadcast_authorized)
+            self.assertIs(authorized.evaluation_submitter,submitter)
+            os.environ.pop('TENDERLENS_GENLAYER_BROADCAST_AUTHORIZED')
+            disabled=create_app()
+            self.assertFalse(disabled.broadcast_authorized)
+            self.assertIsNone(disabled.evaluation_submitter)
+
+    def test_submission_route_is_server_gated_and_ignores_client_broadcast_flag(self):
+        tid,_,snapshot=self.create_snapshot()
+        submitter=FakeEvaluationSubmitter()
+        self.app.evaluation_submitter=submitter
+        self.app.broadcast_authorized=False
+        status,body,_=self.call('POST',f"/api/tenders/{tid}/evaluation-snapshots/{snapshot['snapshot_id']}/submit",
+                                {'idempotency_key':'client-cannot-enable','broadcast_authorized':True})
+        self.assertEqual(status,503)
+        self.assertEqual(body['error']['code'],'submission_disabled')
+        self.assertEqual(submitter.calls,0)
+        with self.app.db() as c:
+            self.assertEqual(c.execute('SELECT COUNT(*) FROM evaluation_requests').fetchone()[0],0)
+
+    def test_server_authorized_fake_submitter_is_idempotent_and_exposes_queryable_state(self):
+        tid,_,snapshot=self.create_snapshot()
+        submitter=FakeEvaluationSubmitter()
+        self.app.evaluation_submitter=submitter
+        self.app.broadcast_authorized=True
+        path=f"/api/tenders/{tid}/evaluation-snapshots/{snapshot['snapshot_id']}/submit"
+        status,body,_=self.call('POST',path,{'idempotency_key':'server-gated-test'})
+        self.assertEqual(status,202)
+        self.assertEqual(body['request']['lifecycle_state'],'finalized')
+        request_id=body['request']['request_id']
+        self.assertEqual(body['request']['snapshot_id'],snapshot['snapshot_id'])
+        self.assertEqual(body['request']['evaluation_tx_hash'],'0x'+'2'*64)
+        self.assertIsNone(body['result'])
+        status,retry,_=self.call('POST',path,{'idempotency_key':'server-gated-test'})
+        self.assertEqual(status,202)
+        self.assertEqual(retry['request']['request_id'],request_id)
+        self.assertEqual(submitter.calls,1)
+        status,body,_=self.call('POST',path,{'idempotency_key':'client-flag','broadcast_authorized':True})
+        self.assertEqual(status,400)
+        self.assertEqual(body['error']['code'],'validation_error')
+        self.assertEqual(submitter.calls,1)
+        status,state,_=self.call('GET',f'/api/evaluation-requests/{request_id}')
+        self.assertEqual(status,200)
+        self.assertEqual(state['request']['evaluation_tx_hash'],'0x'+'2'*64)
+        self.assertIsNone(state['result'])
+
+    def test_submit_route_keeps_authentication_and_maps_request_conflicts(self):
+        tid,_,first=self.create_snapshot()
+        submitter=FakeEvaluationSubmitter()
+        self.app.evaluation_submitter=submitter
+        self.app.broadcast_authorized=True
+        first_path=f"/api/tenders/{tid}/evaluation-snapshots/{first['snapshot_id']}/submit"
+        status,_,_=self.call('POST',first_path,{'idempotency_key':'shared-key'},token='wrong')
+        self.assertEqual(status,401)
+        self.assertEqual(submitter.calls,0)
+        status,_,_=self.call('POST',first_path,{'idempotency_key':'shared-key'})
+        self.assertEqual(status,202)
+        status,other_tender,_=self.call('POST','/api/tenders',{'title':'Other tender','reference':'REF-2026-02'})
+        self.assertEqual(status,201)
+        other_tid=other_tender['id']
+        status,_,_=self.call('POST',f'/api/tenders/{other_tid}/requirements',{
+            'code':'AUTH-2','text':'Verify a different published licence.','category':'eligibility',
+            'mandatory':True,'kind':'judgment'})
+        self.assertEqual(status,201)
+        status,other,_=self.call('POST',f'/api/tenders/{other_tid}/evaluation-snapshots',{})
+        self.assertEqual(status,201)
+        other_path=f"/api/tenders/{other_tid}/evaluation-snapshots/{other['snapshot_id']}/submit"
+        status,body,_=self.call('POST',other_path,{'idempotency_key':'shared-key'})
+        self.assertEqual(status,409)
+        self.assertEqual(body['error']['code'],'idempotency_key_conflict')
+        status,body,_=self.call('POST',first_path,{'idempotency_key':'second-key'})
+        self.assertEqual(status,409)
+        self.assertEqual(body['error']['code'],'snapshot_already_requested')
+        self.assertEqual(submitter.calls,1)
+
+    def test_invalid_finalized_result_is_durable_and_never_reported_as_unknown_or_completed(self):
+        tid,_,snapshot=self.create_snapshot()
+        submitter=InvalidResultSubmitter()
+        self.app.evaluation_submitter=submitter
+        self.app.broadcast_authorized=True
+        path=f"/api/tenders/{tid}/evaluation-snapshots/{snapshot['snapshot_id']}/submit"
+        status,body,_=self.call('POST',path,{'idempotency_key':'invalid-result'})
+        self.assertEqual(status,502)
+        self.assertEqual(body['error']['code'],'result_verification_failed')
+        self.assertEqual(body['request']['lifecycle_state'],'failed')
+        self.assertEqual(body['request']['failure_code'],'result_verification_failed')
+        request_id=body['request']['request_id']
+        status,state,_=self.call('GET',f'/api/evaluation-requests/{request_id}')
+        self.assertEqual(status,502)
+        self.assertEqual(state['request']['failure_code'],'result_verification_failed')
+        status,retry,_=self.call('POST',path,{'idempotency_key':'invalid-result'})
+        self.assertEqual(status,502)
+        self.assertEqual(retry['error']['code'],'result_verification_failed')
+        self.assertEqual(submitter.calls,1)
+
+    def test_snapshot_size_limit_is_measured_in_utf8_bytes(self):
+        tid=self.create_tender()
+        for index in range(25):
+            status,_,_=self.call('POST',f'/api/tenders/{tid}/requirements',{
+                'code':f'UNICODE-{index:02d}','text':'東'*4000,'category':'technical',
+                'mandatory':False,'kind':'objective'})
+            self.assertEqual(status,201)
+        status,body,_=self.call('POST',f'/api/tenders/{tid}/evaluation-snapshots',{})
+        self.assertEqual(status,400)
+        self.assertIn('250000-byte',body['error']['message'])
+
+    def test_json_request_rejects_duplicate_object_keys(self):
+        status,body,_=self.call('POST','/api/tenders',b'{"title":"First","title":"Second","reference":"DUP-JSON"}')
+        self.assertEqual(status,400)
+        self.assertEqual(body['error']['code'],'validation_error')
+        self.assertIn('duplicate keys',body['error']['message'])
+        status,rows,_=self.call('GET','/api/tenders')
+        self.assertEqual(status,200)
+        self.assertEqual(rows['items'],[])
+
     def test_registration_validates_and_duplicate_reference_conflicts(self):
         self.create_tender(); status,_,_=self.call('POST','/api/tenders',{'title':'Duplicate','reference':'REF-2026-01'}); self.assertEqual(status,409)
         status,body,_=self.call('POST','/api/tenders',{'title':'','reference':'REF-2'}); self.assertEqual(status,400); self.assertEqual(body['error']['code'],'validation_error')

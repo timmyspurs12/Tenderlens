@@ -209,6 +209,59 @@ def test_invalid_json_is_rejected_at_deployment(direct_deploy):
         direct_deploy(str(CONTRACT), "not-json")
 
 
+def test_utf8_encoded_submission_size_limit_is_enforced(direct_deploy):
+    payload = submission(evidence=False)
+    payload["requirements"] = [
+        {
+            "id": f"40000000-0000-4000-8000-{index:012d}",
+            "code": f"UNICODE-{index:02d}",
+            "text": "東" * 4000,
+            "category": "technical",
+            "mandatory": False,
+            "kind": "objective",
+        }
+        for index in range(25)
+    ]
+    refreshed_submission(payload)
+    raw = encoded(payload)
+    assert len(raw) < 250000
+    assert len(raw.encode("utf-8")) > 250000
+    with pytest.raises(Exception, match="250000-byte limit"):
+        direct_deploy(str(CONTRACT), raw)
+
+
+def test_oversized_result_fails_without_committing_a_partial_evaluation(direct_vm, direct_deploy):
+    payload = submission(evidence=False)
+    payload["requirements"] = [
+        {
+            "id": f"40000000-0000-4000-8000-{index:012d}",
+            "code": f"REQ-{index:02d}",
+            "text": "Review the supplied synthetic evidence.",
+            "category": "technical",
+            "mandatory": False,
+            "kind": "judgment",
+        }
+        for index in range(25)
+    ]
+    evidence_ids = [f"50000000-0000-4000-8000-{index:012d}" for index in range(100)]
+    payload["evidence"] = [
+        evidence_item(evidence_id, f"60000000-0000-4000-8000-{index:012d}", 1,
+                     f"synthetic-{index:03d}.txt", "x", None)
+        for index, evidence_id in enumerate(evidence_ids)
+    ]
+    refreshed_submission(payload)
+    direct_vm.mock_llm(
+        r"Classify this requirement using only the supplied evidence data",
+        encoded({"status": "compliant", "reason": "The synthetic excerpts support this criterion.",
+                 "evidence_ids": evidence_ids}),
+    )
+    contract = direct_deploy(str(CONTRACT), encoded(payload))
+    with direct_vm.expect_revert("250000-byte limit"):
+        contract.evaluate()
+    assert contract.get_lifecycle_status() == "prepared"
+    assert contract.get_result() == ""
+
+
 def test_malformed_requirement_set_is_rejected_at_deployment(direct_deploy):
     malformed = submission()
     malformed["requirements"] = []
