@@ -69,8 +69,8 @@ jobs:
           .venv/bin/python -m pytest tests/genlayer_direct -v --tb=short 2>&1 | tee "$RUNNER_TEMP/direct-mode-pytest.log"
           result=${PIPESTATUS[0]}
           if [[ "$result" -ne 0 ]]; then
-            detail="$(grep -E '^E   |^FAILED |^ERROR ' "$RUNNER_TEMP/direct-mode-pytest.log" | tail -n 4 | tr '\n' ' ' | cut -c 1-500)"
-            if [[ -z "$detail" ]]; then detail="$(tail -n 5 "$RUNNER_TEMP/direct-mode-pytest.log" | tr '\n' ' ' | cut -c 1-500); fi
+            detail="$(tail -c 500 "$RUNNER_TEMP/direct-mode-pytest.log" | tr '\n' ' ' | cut -c 1-500)"
+            if [[ -z "$detail" ]]; then detail="pytest exited with code $result and produced no captured output"; fi
             printf 'failure-detail=%s\n' "$detail" >> "$GITHUB_OUTPUT"
           fi
           exit "$result"
