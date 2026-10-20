@@ -35,3 +35,32 @@ jobs:
 
       - name: Run backend tests
         run: python -m unittest backend.test_api
+
+  genlayer-direct-mode:
+    name: GenLayer Direct Mode
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+
+    steps:
+      - name: Get the code
+        uses: actions/checkout@v5
+
+      - name: Install Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install Node.js 22.14.0
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22.14.0"
+
+      - name: Install pinned uv
+        run: python -m pip install --disable-pip-version-check "uv==0.13.3"
+
+      - name: Install and verify locked GenLayer environment
+        run: bash .devcontainer/setup.sh --genlayer-only
+
+      - name: Run GenLayer Direct Mode smoke test
+        run: .venv/bin/python -m pytest tests/genlayer_direct -v

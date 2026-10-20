@@ -2,10 +2,19 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+install_frontend=true
+case "${1:-}" in
+  "") ;;
+  --genlayer-only) install_frontend=false ;;
+  *) echo "Usage: $0 [--genlayer-only]" >&2; exit 2 ;;
+esac
+
 # Create the project-only Python environment, then install exactly the checked-in lock.
 uv venv --seed --python 3.12 .venv
 uv pip sync --build-constraints requirements-genlayer-build.lock.txt --python .venv/bin/python requirements-genlayer.lock.txt
-npm ci
+if [[ "$install_frontend" == true ]]; then
+  npm ci
+fi
 
 export PATH="$PWD/.venv/bin:$PATH"
 python --version

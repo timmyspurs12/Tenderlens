@@ -30,7 +30,7 @@ The project Python environment is isolated in `.venv`. `requirements-genlayer.lo
 
 **Important upstream compatibility discrepancy:** the official `genlayer-test` GitHub source at signed commit `343e3a358f9e235a93b49c60721ce7676585ff07` declares version 0.29.2 and `genlayer-py>=0.18.0,<0.20.0`. The PyPI wheel also reports 0.29.2 but its published metadata instead requires `genlayer-py>=0.13.0,<0.17.0`. Those constraints cannot be installed together with SDK 0.18.0. To satisfy the requested compatible pair without overriding dependency metadata, this environment pins the official upstream source commit (package version 0.29.2) and SDK 0.18.0; it deliberately does not install the incompatible PyPI wheel. Both alternatives must be rechecked upstream before changing these pins.
 
-The devcontainer was not built or opened as a Codespace in this execution environment, so its Python version, dependency installation, and `gltest` command have not yet been executed here. The `postCreateCommand` performs those checks and fails closed if installed package versions differ. No contract tests exist yet; Direct Mode is the intended first runtime validation, with no network or credentials required.
+The `.devcontainer/setup.sh` performs version/source/runner checks and fails closed if the installed packages differ. The GitHub Actions workflow now has an isolated GenLayer job that invokes the same setup with `--genlayer-only`, then runs a small official Direct Mode storage read/write smoke test. This fixture checks runner startup and basic contract execution only; it is not a procurement assessment, consensus test, or deployed contract. The new job must pass in Actions before this SDK runtime is considered verified.
 
 ## Design system
 

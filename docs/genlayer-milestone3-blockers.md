@@ -20,6 +20,8 @@ The official testing-suite GitHub `main` resolves to signed commit `343e3a358f9e
 - [PyPI metadata for `genlayer-test` 0.29.2](https://pypi.org/pypi/genlayer-test/0.29.2/json).
 - [Official Microsoft Dev Container Python image source](https://github.com/devcontainers/images/tree/main/src/python): lists published variant `3.12-bookworm`; a runtime pull/digest was not available from this host.
 
-## Verification still required in Codespaces
+## GitHub Actions validation
 
-Open this feature branch in GitHub Codespaces, wait for the post-create script to complete, and verify `python --version`, `python -m pip --version`, `python -m pip show genlayer-test genlayer-py`, `gltest --help`, then run the backend unittest suite and frontend npm test/typecheck/lint/build commands. Only after those environment checks pass should contract work begin. No wallet secrets, network credentials, or deployment configuration are included. No Studio Mode, deployment, transaction, or consensus flow was attempted.
+The workflow now has a separate `GenLayer Direct Mode` job. It provisions Python 3.12 and Node 22.14.0, installs pinned uv, and calls `.devcontainer/setup.sh --genlayer-only` so the same dependency locks and installed-package/source/runner checks are reused without repeating frontend installation. It then runs `tests/genlayer_direct/test_runner_smoke.py` using the official pytest plugin fixtures and a small storage contract based on the pinned suite's published Direct Mode example. This smoke fixture validates only Direct Mode contract load/read/write; it is not a procurement assessment or real consensus.
+
+The GitHub Actions job must execute successfully before the runtime is considered verified. No wallet secrets, network credentials, or deployment configuration are required. No Studio Mode, deployment, transaction, or consensus flow is part of this job.
