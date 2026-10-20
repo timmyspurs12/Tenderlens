@@ -75,6 +75,6 @@ jobs:
           fi
           exit "$result"
 
-      - name: Surface Direct Mode failure details: ${{ steps.direct-tests.outputs.failure-detail }}
+      - name: "Surface Direct Mode failure details: ${{ steps.direct-tests.outputs.failure-detail }}"
         if: always() && steps.direct-tests.outcome == 'failure'
         run: echo "Direct Mode test failure summary is included in this step name."
