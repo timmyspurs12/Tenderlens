@@ -264,10 +264,15 @@ Input data (JSON):
             return gl.nondet.exec_prompt(prompt)
 
         raw = gl.eq_principle.strict_eq(leader_interpretation)
-        try:
-            decision = json.loads(raw)
-        except Exception:
-            raise ValueError("Intelligent interpretation did not return valid JSON")
+        if isinstance(raw, dict):
+            decision = raw
+        elif isinstance(raw, str):
+            try:
+                decision = json.loads(raw)
+            except Exception:
+                raise ValueError("Intelligent interpretation did not return valid JSON")
+        else:
+            raise ValueError("Intelligent interpretation did not return a JSON object or string")
         if not isinstance(decision, dict) or set(decision.keys()) != {"status", "reason"}:
             raise ValueError("Intelligent interpretation returned an invalid decision schema")
         status = decision["status"]
