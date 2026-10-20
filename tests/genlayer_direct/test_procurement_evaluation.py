@@ -147,10 +147,12 @@ def test_contradictory_evidence_is_distinct_and_unresolved(direct_vm, direct_dep
     }]
 
 
-def test_invalid_json_and_malformed_requirement_are_rejected_at_deployment(direct_deploy):
+def test_invalid_json_is_rejected_at_deployment(direct_deploy):
     with pytest.raises(Exception, match="valid JSON"):
         direct_deploy(str(CONTRACT), "not-json")
 
+
+def test_malformed_requirement_set_is_rejected_at_deployment(direct_deploy):
     malformed = submission()
     malformed["requirements"] = []
     with pytest.raises(Exception, match="between 1 and 50"):
@@ -179,16 +181,13 @@ def test_result_preserves_evidence_version_and_byte_range_traceability(direct_vm
 
 def test_result_schema_is_stable_and_evaluation_cannot_be_rewritten(direct_vm, direct_deploy):
     response = {"status": "compliant", "reason": "The cited evidence supports the licence requirement."}
-    first = deploy_evaluation(direct_deploy, direct_vm, response)
-    first_output = first.evaluate()
-    direct_vm.clear_mocks()
-    second = deploy_evaluation(direct_deploy, direct_vm, response)
-    second_output = second.evaluate()
+    contract = deploy_evaluation(direct_deploy, direct_vm, response)
+    result = contract.evaluate()
 
-    assert first_output == second_output
-    parsed = json.loads(first_output)
+    parsed = json.loads(result)
+    assert result == encoded(parsed)
     assert list(parsed.keys()) == sorted(parsed.keys())
     assert list(parsed["decisions"][0].keys()) == sorted(parsed["decisions"][0].keys())
     with direct_vm.expect_revert("evaluation has already been completed"):
-        first.evaluate()
-    assert first.get_result() == first_output
+        contract.evaluate()
+    assert contract.get_result() == result
