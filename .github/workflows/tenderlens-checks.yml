@@ -63,13 +63,4 @@ jobs:
         run: bash .devcontainer/setup.sh --genlayer-only
 
       - name: Run GenLayer Direct Mode contract tests
-        run: |
-          set +e
-          .venv/bin/python -m pytest tests/genlayer_direct -vv > /tmp/direct-mode-pytest.log 2>&1
-          result=$?
-          cat /tmp/direct-mode-pytest.log
-          if [ "$result" -ne 0 ]; then
-            DIAGNOSTIC="$(tail -n 40 /tmp/direct-mode-pytest.log | sed 's/%/%25/g; s/\r/%0D/g; :a;N;$!ba;s/\n/%0A/g')"
-            echo "::error title=Direct Mode pytest failure::$DIAGNOSTIC"
-          fi
-          exit "$result"
+        run: .venv/bin/python -m pytest tests/genlayer_direct -v

@@ -165,7 +165,7 @@ def test_explicitly_non_compliant_evidence_is_not_promoted_to_compliance(direct_
         payload=submission(excerpt="Licence expired on 2025-12-31."),
     )
     result = json.loads(contract.evaluate())
-    assert result["overall_status"] == "non_compliant"
+    assert result["overall_status"] == "mandatory_non_compliance"
     assert result["decisions"][0]["status"] == "non_compliant"
 
 
