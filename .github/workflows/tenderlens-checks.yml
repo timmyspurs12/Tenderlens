@@ -1,27 +1,37 @@
-
 name: TenderLens Checks
 
 on:
   push:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Get the code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
-      - name: Install Python
-        uses: actions/setup-python@v5
+      - name: Install Node.js
+        uses: actions/setup-node@v5
         with:
-          python-version: "3.12"
+          node-version: "22"
+          cache: npm
 
-      - name: Install dependencies
-        run: |
-          python -m pip install -r requirements.txt
+      - name: Install frontend dependencies
+        run: npm ci
 
-      - name: Run tests
-        run: |
-          python -m pytest
+      - name: Check TypeScript
+        run: npm run typecheck
+
+      - name: Run frontend tests
+        run: npm test
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Run backend tests
+        run: python -m unittest backend.test_api
