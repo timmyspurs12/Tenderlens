@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS documents(id TEXT PRIMARY KEY, tender_id TEXT NOT NUL
 CREATE TABLE IF NOT EXISTS amendments(id TEXT PRIMARY KEY, tender_id TEXT NOT NULL REFERENCES tenders(id), workspace TEXT NOT NULL, document_id TEXT NOT NULL REFERENCES documents(id), predecessor_id TEXT REFERENCES documents(id), relationship TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS requirements(id TEXT PRIMARY KEY, tender_id TEXT NOT NULL REFERENCES tenders(id), workspace TEXT NOT NULL, code TEXT NOT NULL, text TEXT NOT NULL, category TEXT NOT NULL, mandatory INTEGER NOT NULL, kind TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(tender_id, code));
 CREATE TABLE IF NOT EXISTS evidence(id TEXT PRIMARY KEY, tender_id TEXT NOT NULL REFERENCES tenders(id), workspace TEXT NOT NULL, requirement_id TEXT REFERENCES requirements(id), document_id TEXT NOT NULL REFERENCES documents(id), document_sha256 TEXT NOT NULL, start_byte INTEGER NOT NULL, end_byte INTEGER NOT NULL, excerpt TEXT NOT NULL, provenance_json TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS evaluation_snapshots(id TEXT PRIMARY KEY, tender_id TEXT NOT NULL REFERENCES tenders(id), workspace TEXT NOT NULL, input_sha256 TEXT NOT NULL, payload_json TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS documents_tender ON documents(tender_id, created_at);
 CREATE INDEX IF NOT EXISTS evidence_tender ON evidence(tender_id, created_at);
 CREATE TRIGGER IF NOT EXISTS documents_no_update BEFORE UPDATE ON documents BEGIN SELECT RAISE(ABORT, 'document versions are immutable'); END;
@@ -25,6 +26,8 @@ CREATE TRIGGER IF NOT EXISTS evidence_no_update BEFORE UPDATE ON evidence BEGIN 
 CREATE TRIGGER IF NOT EXISTS evidence_no_delete BEFORE DELETE ON evidence BEGIN SELECT RAISE(ABORT, 'evidence provenance is immutable'); END;
 CREATE TRIGGER IF NOT EXISTS amendments_no_update BEFORE UPDATE ON amendments BEGIN SELECT RAISE(ABORT, 'amendment annotations are immutable'); END;
 CREATE TRIGGER IF NOT EXISTS amendments_no_delete BEFORE DELETE ON amendments BEGIN SELECT RAISE(ABORT, 'amendment annotations are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS evaluation_snapshots_no_update BEFORE UPDATE ON evaluation_snapshots BEGIN SELECT RAISE(ABORT, 'evaluation snapshots are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS evaluation_snapshots_no_delete BEFORE DELETE ON evaluation_snapshots BEGIN SELECT RAISE(ABORT, 'evaluation snapshots are immutable'); END;
 """
 def now() -> str: return datetime.now(timezone.utc).isoformat()
 def uid() -> str: return str(uuid.uuid4())
@@ -91,6 +94,12 @@ class TenderLensAPI:
             record={"id":uid(),"title":title,"reference":ref,"deadline":deadline,"created_at":now()}
             with self.db() as c: c.execute("INSERT INTO tenders VALUES(?,?,?,?,?,?)",(record["id"],self.workspace,title,ref,deadline,record["created_at"]))
             return 201,record
+        snapshot_match=re.fullmatch(r"/api/tenders/([^/]+)/evaluation-snapshots(?:/([^/]+))?",p)
+        if snapshot_match:
+            tid,snapshot_id=snapshot_match.groups()
+            with self.db() as c:
+                if self.tender(c,tid) is None: return err(404,"not_found","Tender not found.")
+                return self.evaluation_snapshots(c,m,tid,snapshot_id,e)
         match=re.fullmatch(r"/api/tenders/([^/]+)(?:/(documents|amendments|requirements|evidence))?",p)
         if not match: return err(404,"not_found","Route not found.")
         tid,resource=match.groups()
@@ -103,6 +112,51 @@ class TenderLensAPI:
             if resource=="requirements": return self.requirements(c,m,tid,e)
             if resource=="evidence": return self.evidence(c,m,tid,e)
         return err(404,"not_found","Route not found.")
+    def evaluation_snapshots(self,c,m,tid,snapshot_id,e):
+        if m=="GET":
+            if snapshot_id is None:
+                rows=c.execute("SELECT id,input_sha256,created_at FROM evaluation_snapshots WHERE tender_id=? AND workspace=? ORDER BY created_at,id",(tid,self.workspace)).fetchall()
+                return 200,{"items":[{**dict(r),"status":"prepared_not_submitted"} for r in rows]}
+            if not valid_id(snapshot_id): return err(404,"not_found","Evaluation snapshot not found.")
+            row=c.execute("SELECT * FROM evaluation_snapshots WHERE id=? AND tender_id=? AND workspace=?",(snapshot_id,tid,self.workspace)).fetchone()
+            if row is None: return err(404,"not_found","Evaluation snapshot not found.")
+            return 200,{"snapshot_id":row["id"],"input_sha256":row["input_sha256"],"created_at":row["created_at"],"status":"prepared_not_submitted","submission":json.loads(row["payload_json"])}
+        if m!="POST" or snapshot_id is not None: return err(404,"not_found","Route not found.")
+        b=self.body_json(e); only_keys(b,{"evidence_ids"})
+        evidence_ids=b.get("evidence_ids",[])
+        if not isinstance(evidence_ids,list) or len(evidence_ids)>100: raise ValueError("evidence_ids must be a list of at most 100 evidence UUIDs")
+        if any(not isinstance(value,str) or not valid_id(value) for value in evidence_ids): raise ValueError("Every evidence_id must be a UUID")
+        if len(evidence_ids)!=len(set(evidence_ids)): raise ValueError("evidence_ids must be unique")
+        req_rows=c.execute("SELECT id,code,text,category,mandatory,kind FROM requirements WHERE tender_id=? AND workspace=? ORDER BY code,id",(tid,self.workspace)).fetchall()
+        if not req_rows: raise ValueError("At least one explicit requirement must be registered before preparing an evaluation")
+        if len(req_rows)>50: raise ValueError("At most 50 requirements can be included in an evaluation snapshot")
+        requirements=[{"id":r["id"],"code":r["code"],"text":r["text"],"category":r["category"],"mandatory":bool(r["mandatory"]),"kind":r["kind"]} for r in req_rows]
+        if evidence_ids:
+            placeholders=",".join("?" for _ in evidence_ids)
+            rows=c.execute(f"SELECT e.id,e.requirement_id,e.document_id,e.document_sha256,e.start_byte,e.end_byte,e.excerpt,e.provenance_json,e.created_at AS evidence_created_at,d.version,d.sha256 AS stored_sha256,d.filename,d.blob_path,d.size FROM evidence e JOIN documents d ON d.id=e.document_id WHERE e.tender_id=? AND e.workspace=? AND e.id IN ({placeholders})",(tid,self.workspace,*evidence_ids)).fetchall()
+            if len(rows)!=len(evidence_ids): return err(400,"invalid_evidence","Every evidence record must belong to this tender.")
+        else:
+            rows=[]
+        evidence=[]
+        for row in sorted(rows,key=lambda r:(r["evidence_created_at"],r["id"])):
+            data=Path(row["blob_path"]).read_bytes()
+            if hashlib.sha256(data).hexdigest()!=row["stored_sha256"] or row["document_sha256"]!=row["stored_sha256"]:
+                return err(500,"integrity_failure","Stored evidence source did not verify while preparing the snapshot.")
+            if row["end_byte"]>row["size"] or data[row["start_byte"]:row["end_byte"]].decode("utf-8")!=row["excerpt"]:
+                return err(500,"integrity_failure","Evidence excerpt no longer matches its recorded source range.")
+            provenance=json.loads(row["provenance_json"])
+            evidence.append({"id":row["id"],"requirement_id":row["requirement_id"],"document_id":row["document_id"],"document_version":row["version"],"document_sha256":row["stored_sha256"],"filename":row["filename"],"start_byte":row["start_byte"],"end_byte":row["end_byte"],"excerpt":row["excerpt"],"provenance":provenance,"created_at":row["evidence_created_at"]})
+        if any(len(item["text"])>4000 for item in requirements): raise ValueError("Requirement text exceeds the 4000-character contract limit")
+        if any(len(item["excerpt"])>8000 for item in evidence): raise ValueError("Evidence excerpt exceeds the 8000-character contract limit")
+        base={"schema_version":"tenderlens.evaluation-submission.v1","evaluation_id":uid(),"snapshot_id":uid(),"tender_id":tid,"requirements":requirements,"evidence":evidence}
+        canonical=json.dumps(base,sort_keys=True,separators=(",",":"),ensure_ascii=False)
+        digest=hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        submission={**base,"snapshot_sha256":digest}
+        payload=json.dumps(submission,sort_keys=True,separators=(",",":"),ensure_ascii=False)
+        if len(payload)>250000: raise ValueError("Evaluation snapshot exceeds the 250000-character contract limit")
+        created_at=now()
+        c.execute("INSERT INTO evaluation_snapshots VALUES(?,?,?,?,?,?)",(submission["snapshot_id"],tid,self.workspace,digest,payload,created_at))
+        return 201,{"snapshot_id":submission["snapshot_id"],"input_sha256":digest,"created_at":created_at,"status":"prepared_not_submitted","submission":submission}
     def documents(self,c,m,tid,e):
         if m=="GET":
             rows=c.execute("SELECT id,group_id,version,filename,content_type,size,sha256,supersedes_document_id,created_at FROM documents WHERE tender_id=? AND workspace=? ORDER BY group_id,version",(tid,self.workspace)).fetchall()

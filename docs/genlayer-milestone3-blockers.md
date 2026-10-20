@@ -1,27 +1,30 @@
-# GenLayer environment discovery: Milestone 3A
+# GenLayer milestone: procurement evaluation prototype
 
-## Runtime status
+## Verified runtime
 
-The local Agent Mode host remains CPython 3.11.2, with no `python3.12`, Docker, or GenLayer CLI. `uv==0.13.3` is available only from a temporary `pip --target` install, not system-wide. Attempts to download managed CPython 3.12.15 from `github.com/astral-sh/python-build-standalone` failed on its redirect to `objects.githubusercontent.com` (`UnknownIssuer`). No local Python 3.12 environment was created, and no package has been installed into the existing Python environment.
+The local Agent Mode host remains CPython 3.11.2 and does not have the GenLayer packages installed. Runtime verification is delegated to GitHub Actions on the writable feature branch. The workflow provisions Python 3.12, Node 22.14.0, and `uv==0.13.3`, installs the lockfiles, checks `genlayer-test==0.29.2`, `genlayer-py==0.18.0`, `pytest==9.1.1`, source commit `343e3a358f9e235a93b49c60721ce7676585ff07`, and `gltest --help`, then runs the Direct Mode suite.
 
-A reproducible GitHub Codespaces configuration is now checked in under `.devcontainer/`. Its base image is the published Microsoft Dev Container Python tag `mcr.microsoft.com/devcontainers/python:3.12-bookworm`, verified as a listed variant in the official `devcontainers/images` repository. The `postCreateCommand` asserts CPython 3.12, reports pip and GenLayer versions, and checks that the Direct Mode runner exists. The image/container itself was **not built or launched** in this local environment, and the Codespaces checks have not run.
+**Compatibility pin:** the pinned upstream source commit declares suite version 0.29.2 and permits `genlayer-py>=0.18.0,<0.20.0`. The PyPI wheel `genlayer-test==0.29.2` instead requires `genlayer-py>=0.13.0,<0.17.0`; do not replace the source pin with that incompatible wheel or override its metadata. `requirements-genlayer.in` and its hashed locks preserve the tested source/SDK pair.
 
-## GenLayer dependency compatibility finding
+## Contract and boundary
 
-The official testing-suite GitHub `main` resolves to signed commit `343e3a358f9e235a93b49c60721ce7676585ff07`. Its `pyproject.toml` declares package version `0.29.2`, requires Python >=3.12, and accepts `genlayer-py>=0.18.0,<0.20.0`. The exact PyPI release `genlayer-test==0.29.2`, however, publishes metadata `genlayer-py>=0.13.0,<0.17.0`. This was checked directly from the PyPI JSON for release 0.29.2. Therefore the PyPI distribution and requested `genlayer-py==0.18.0` are incompatible; forcing either would conceal a dependency conflict.
+`tests/genlayer_direct/contracts/procurement_evaluation.py` accepts a `tenderlens.evaluation-submission.v1` JSON snapshot. It validates the request deterministically, then calls `gl.nondet.exec_prompt` under `gl.eq_principle.strict_eq` for requirements with evidence. Requirements with no matching/global evidence are deterministically marked `insufficient_evidence` without an LLM call. The versioned `tenderlens.evaluation-result.v1` includes per-requirement status and reasoning, evidence IDs plus document version/hash/byte-range references, an overall `compliant` / `non_compliant` / `inconclusive` status, and unresolved requirements. The contract is one-shot: a completed evaluation cannot be overwritten.
 
-`requirements-genlayer.in` instead pins the official source at that immutable signed Git commit (which declares the required 0.29.2 package version) together with `genlayer-py==0.18.0` and `pytest==9.1.1`. The transitive dependency lock with artifact hashes was successfully resolved for Python 3.12 using `uv pip compile` into `requirements-genlayer.lock.txt`. This is a **lock resolution**, not evidence that the packages were installed or that tests passed. uv warned that the Python 3.12 interpreter was unavailable locally; it used Python 3.11.2 to build dependency metadata while resolving the requested target.
+The authenticated backend now has immutable `evaluation-snapshots` routes. They freeze all currently registered requirements and explicitly selected evidence records, including source excerpts and immutable document-version provenance, into a canonical payload and SHA-256 fingerprint. This is only a preparation boundary: route state is `prepared_not_submitted`. There is no transaction submission, wallet, contract address, transaction hash, network status polling, result callback, or finalization API. The contract validates the snapshot fingerprint's format and preserves it, but does not cryptographically authenticate the backend or independently recompute the digest; production wiring must validate the result against the stored immutable snapshot.
 
-## Official references checked
+## Tests and limitations
 
-- [Official GenLayer Testing Suite docs (Direct Mode and Studio Mode)](https://docs.genlayer.com/api-references/genlayer-test): Direct Mode needs Python >=3.12 but no Docker/network; Studio Mode requires Docker.
-- [Official testing-suite source at the pinned commit](https://github.com/genlayerlabs/genlayer-testing-suite/tree/343e3a358f9e235a93b49c60721ce7676585ff07).
-- [Pinned commit API/signature metadata](https://api.github.com/repos/genlayerlabs/genlayer-testing-suite/commits/343e3a358f9e235a93b49c60721ce7676585ff07).
-- [PyPI metadata for `genlayer-test` 0.29.2](https://pypi.org/pypi/genlayer-test/0.29.2/json).
-- [Official Microsoft Dev Container Python image source](https://github.com/devcontainers/images/tree/main/src/python): lists published variant `3.12-bookworm`; a runtime pull/digest was not available from this host.
+Run:
 
-## GitHub Actions validation
+```sh
+.venv/bin/python -m pytest tests/genlayer_direct -v
+python -m unittest backend.test_api -v
+npm run typecheck
+npm test
+npm run build
+npm run lint
+```
 
-The workflow now has a separate `GenLayer Direct Mode` job. It provisions Python 3.12 and Node 22.14.0, installs pinned uv, and calls `.devcontainer/setup.sh --genlayer-only` so the same dependency locks and installed-package/source/runner checks are reused without repeating frontend installation. It then runs `tests/genlayer_direct/test_runner_smoke.py` using the official pytest plugin fixtures and a small storage contract based on the pinned suite's published Direct Mode example. This smoke fixture validates only Direct Mode contract load/read/write; it is not a procurement assessment or real consensus.
+The Direct Mode suite deploys the actual contract in the pinned in-memory runner and tests compliant, explicitly non-compliant, missing, and contradictory evidence; malformed inputs; provenance; stable schema; and one-shot lifecycle. Direct Mode does not perform real nondeterministic model inference or validator consensus: its documented `direct_vm.mock_llm` cheatcode returns fixed model text while real contract code, storage, methods, and state transitions execute. This is not a live deployment or production-readiness claim.
 
-The GitHub Actions job must execute successfully before the runtime is considered verified. No wallet secrets, network credentials, or deployment configuration are required. No Studio Mode, deployment, transaction, or consensus flow is part of this job.
+Known constraints: only supplied `text/plain` byte-range evidence is supported; PDF/DOCX extraction, source authenticity, OCR, amendment semantic comparison, verified objective fact extraction, and adversarial prompt-injection resistance are not solved. A model-supported status is an evidence interpretation, not legal advice or an automatic award. Procurement documents may be confidential; contract arguments/calldata/state may be public on a live network, so the prototype is intentionally not deployed.

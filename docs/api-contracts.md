@@ -15,7 +15,7 @@ The server is `backend/app.py`, a minimal Python WSGI + SQLite API. This contrac
 
 All non-204 failures return `{ "error": { "code": string, "message": string } }` and an `X-Request-ID`. Responses have `Cache-Control: no-store` and `X-Content-Type-Options: nosniff`.
 
-- `400 validation_error`, `invalid_document`, `invalid_predecessor`, `invalid_requirement`, `unsupported_evidence_source`
+- `400 validation_error`, `invalid_document`, `invalid_predecessor`, `invalid_requirement`, `invalid_evidence`, `unsupported_evidence_source`
 - `401 unauthorized` (missing/invalid bearer token)
 - `404 not_found` (including another workspace's records)
 - `409 conflict` (duplicate tender reference / uniqueness violation)
@@ -50,9 +50,37 @@ type Evidence = { id:string; requirement_id:string|null; document_id:string; doc
 - `POST /api/tenders/{tenderId}/requirements` → `201 Requirement`; body `{ code, text, category, mandatory, kind }`. It registers a stated criterion only; it does not evaluate or endorse it.
 - `GET /api/tenders/{tenderId}/evidence` → `{ items: Evidence[] }`
 - `POST /api/tenders/{tenderId}/evidence` → `201 Evidence`; body `{ document_id, requirement_id?: string|null, start_byte, end_byte }`. For `text/plain` only, the excerpt is derived from exact UTF-8 bytes at the supplied half-open byte interval and the stored original's SHA-256 is rechecked. PDF/DOCX passage extraction intentionally returns `unsupported_evidence_source`; no page/section/citation is fabricated. A matching hash proves stored-byte integrity, not source authenticity or truth.
+- `POST /api/tenders/{tenderId}/evaluation-snapshots` → `201 EvaluationSnapshot`; body `{ evidence_ids?: string[] }`. The API includes every currently registered requirement and only the listed evidence records; an empty list deliberately represents missing evidence. Evidence must belong to this tender, point at an immutable document version, and still match its stored content hash and UTF-8 byte range. The server creates a snapshot UUID and SHA-256 over canonical JSON and stores the exact payload in an append-only row. Response: `{ snapshot_id, input_sha256, created_at, status: 'prepared_not_submitted', submission: EvaluationSubmission }`.
+- `GET /api/tenders/{tenderId}/evaluation-snapshots` → `{ items: [{ id, input_sha256, created_at, status: 'prepared_not_submitted' }] }`
+- `GET /api/tenders/{tenderId}/evaluation-snapshots/{snapshotId}` → the same snapshot metadata plus the exact `submission` payload. Later uploads do not modify this snapshot. The payload can be serialized and passed to the contract constructor as `submission_json`.
 
-## Not implemented: assessment, GenLayer, lifecycle
+`EvaluationSubmission` schema version is `tenderlens.evaluation-submission.v1` and contains `evaluation_id`, `snapshot_id`, `snapshot_sha256`, `tender_id`, all requirement descriptors, and selected evidence descriptors including evidence/document UUIDs, document version, document SHA-256, filename, byte offsets, excerpt, original provenance, and creation timestamp. The backend-generated digest is SHA-256 over canonical JSON for the payload before the digest field is added. The contract validates its shape and records it, but does not authenticate the backend or independently recompute the digest. A deployment adapter must compare the contract's returned snapshot reference against the stored snapshot before associating results.
 
-No evaluation submission route exists. In particular the server accepts no frontend verdict, consensus result, contract address, transaction hash, execution outcome, or finalization assertion. Lifecycle states reserved for a future verified integration are `draft`, `documents_verified`, `ready_for_evaluation`, `submitted`, `consensus_pending`, `finalized`, `inconclusive`, `failed`, `leader_timeout`, `validator_timeout`, and `unresolved`. API processing, transaction submission, consensus completion, protocol finalization, and contract execution must be represented as separate verified facts. No local transaction receipt alone constitutes a finalized decision.
+```ts
+type EvaluationSubmission = {
+  schema_version: 'tenderlens.evaluation-submission.v1';
+  evaluation_id: string; snapshot_id: string; snapshot_sha256: string; tender_id: string;
+  requirements: Array<{ id: string; code: string; text: string; category: Requirement['category']; mandatory: boolean; kind: Requirement['kind'] }>;
+  evidence: Array<{ id: string; requirement_id: string|null; document_id: string; document_version: number; document_sha256: string; filename: string; start_byte: number; end_byte: number; excerpt: string; provenance: Evidence['provenance']; created_at: string }>;
+};
+type EvaluationResult = {
+  schema_version: 'tenderlens.evaluation-result.v1'; evaluation_id: string; tender_id: string;
+  snapshot_id: string; snapshot_sha256: string;
+  overall_status: 'compliant'|'non_compliant'|'inconclusive';
+  decisions: Array<{ requirement_id: string; code: string; mandatory: boolean;
+    status: 'compliant'|'non_compliant'|'insufficient_evidence'|'contradictory_evidence';
+    reason: string; evidence_refs: Array<{ evidence_id: string; document_id: string; document_version: number; document_sha256: string; filename: string; start_byte: number; end_byte: number }> }>;
+  unresolved_requirements: Array<{ requirement_id: string; code: string; status: 'insufficient_evidence'|'contradictory_evidence' }>;
+  disclaimer: string;
+};
+```
 
-Before adding an evaluation route, pin a rubric version and exact evidence/document hashes, validate objective checks deterministically, submit an idempotent request keyed by a caller-supplied idempotency key, persist transaction and consensus lifecycle independently, and expose only network-verified state. GenLayer SDK/compiler, network configuration, wallet/credentials, contract tests, and a supported finalization/status query are not present in this repository or environment configuration, so deployment is deliberately blocked.
+Overall status is `non_compliant` if any requirement is explicitly non-compliant; otherwise it is `inconclusive` if any requirement is insufficient or contradictory; otherwise it is `compliant`. Missing evidence is deterministically insufficient and never reaches the LLM path. Evidence with no `requirement_id` is treated as supplied context for every requirement; requirement-scoped evidence is considered only for that requirement.
+
+## Implemented Direct Mode contract; no network lifecycle
+
+`tests/genlayer_direct/contracts/procurement_evaluation.py` is a GenLayer Intelligent Contract. Its constructor deterministically validates the submission schema and version/hash/reference shapes. `evaluate()` classifies each requirement with an Intelligent Contract prompt wrapped in `gl.eq_principle.strict_eq`; when no evidence is linked or supplied, the contract deterministically emits `insufficient_evidence` without calling the model. Output schema `tenderlens.evaluation-result.v1` contains one decision per requirement, reason, evidence references with exact document version/hash/byte range, an overall status, and unresolved requirements. A successful evaluation is one-shot; it cannot silently be rewritten.
+
+`bash .devcontainer/setup.sh --genlayer-only` installs the locked Python/GenLayer environment. Run `.venv/bin/python -m pytest tests/genlayer_direct -v` for Direct Mode contract tests and `python -m unittest backend.test_api -v` for backend/API tests. The pinned Direct Mode runner requires LLM mocks for nondeterministic calls. These tests execute real contract code and state transitions with fixed mocked model responses; they do not test actual LLM quality, live validator consensus, or Studio/network behavior.
+
+The backend boundary ends at immutable `prepared_not_submitted` snapshots. No route submits a transaction, accepts a contract result, stores a contract address/transaction hash, or asserts network consensus/finalization. Those must be implemented as distinct, verifiable lifecycle facts before production integration. No legal advice or automatic procurement award is provided. Tender evidence may be confidential; contract calldata/state may be public on a live network, so do not deploy sensitive material. This contract is Direct Mode tested only and has not been deployed.

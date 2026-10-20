@@ -62,5 +62,29 @@ class BackendAPITest(unittest.TestCase):
     def test_evidence_integrity_detects_modified_blob(self):
         tid=self.create_tender(); _,doc,_=self.upload(tid,b'source text'); blob=next((Path(self.tmp.name)/'blobs').iterdir()); blob.write_bytes(b'tampered text')
         status,r,_=self.call('POST',f'/api/tenders/{tid}/evidence',{'document_id':doc['id'],'start_byte':0,'end_byte':6}); self.assertEqual(status,500); self.assertEqual(r['error']['code'],'integrity_failure')
+    def test_evaluation_snapshot_is_versioned_hashed_and_immutable(self):
+        tid=self.create_tender(); original=b'Licence valid through 2027-12-31.'
+        _,doc_v1,_=self.upload(tid,original,group='licence')
+        status,req,_=self.call('POST',f'/api/tenders/{tid}/requirements',{'code':'LIC-1','text':'Hold a current operating licence.','category':'eligibility','mandatory':True,'kind':'judgment'}); self.assertEqual(status,201)
+        status,evidence,_=self.call('POST',f'/api/tenders/{tid}/evidence',{'document_id':doc_v1['id'],'requirement_id':req['id'],'start_byte':0,'end_byte':len(original)}); self.assertEqual(status,201)
+        status,snapshot,_=self.call('POST',f'/api/tenders/{tid}/evaluation-snapshots',{'evidence_ids':[evidence['id']]}); self.assertEqual(status,201)
+        self.assertEqual(snapshot['status'],'prepared_not_submitted')
+        submission=snapshot['submission']; self.assertEqual(submission['requirements'][0]['id'],req['id']); self.assertEqual(submission['evidence'][0]['document_version'],1)
+        base={k:v for k,v in submission.items() if k!='snapshot_sha256'}
+        digest=hashlib.sha256(json.dumps(base,sort_keys=True,separators=(',',':'),ensure_ascii=False).encode()).hexdigest()
+        self.assertEqual(digest,snapshot['input_sha256']); self.assertEqual(digest,submission['snapshot_sha256'])
+        _,doc_v2,_=self.upload(tid,b'Licence expired.',group='licence',supersedes=doc_v1['id'])
+        self.assertEqual(doc_v2['version'],2)
+        status,loaded,_=self.call('GET',f"/api/tenders/{tid}/evaluation-snapshots/{snapshot['snapshot_id']}"); self.assertEqual(status,200)
+        self.assertEqual(loaded['submission'],submission); self.assertEqual(loaded['input_sha256'],digest)
+        with self.assertRaises(sqlite3.IntegrityError):
+            with self.app.db() as c: c.execute("UPDATE evaluation_snapshots SET payload_json='{}' WHERE id=?",(snapshot['snapshot_id'],))
+    def test_evaluation_snapshot_rejects_cross_tender_or_unknown_evidence(self):
+        tid=self.create_tender(); other_tid=self.call('POST','/api/tenders',{'title':'Other','reference':'REF-OTHER'})[1]['id']
+        self.call('POST',f'/api/tenders/{tid}/requirements',{'code':'R-1','text':'Must comply.','category':'technical','mandatory':True,'kind':'objective'})
+        _,doc,_=self.upload(other_tid,b'not this tender')
+        _,evidence,_=self.call('POST',f"/api/tenders/{other_tid}/evidence",{'document_id':doc['id'],'start_byte':0,'end_byte':5})
+        status,body,_=self.call('POST',f'/api/tenders/{tid}/evaluation-snapshots',{'evidence_ids':[evidence['id']]})
+        self.assertEqual(status,400); self.assertEqual(body['error']['code'],'invalid_evidence')
 
 if __name__=='__main__': unittest.main()

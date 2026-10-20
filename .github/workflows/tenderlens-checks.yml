@@ -62,5 +62,5 @@ jobs:
       - name: Install and verify locked GenLayer environment
         run: bash .devcontainer/setup.sh --genlayer-only
 
-      - name: Run GenLayer Direct Mode smoke test
+      - name: Run GenLayer Direct Mode contract tests
         run: .venv/bin/python -m pytest tests/genlayer_direct -v
