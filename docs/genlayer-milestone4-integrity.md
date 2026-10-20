@@ -41,11 +41,11 @@ Useful source references:
 - [Linked GenVM executor audit commit](https://github.com/genlayerlabs/genvm-executor/tree/2e094c6fdd7fb3b620706a2d20845e004fb6d298)
 - [GenVM runner identity and hash format](https://github.com/genlayerlabs/genvm-manager/blob/fdca7b729c08995343ad42a143ca7bf6081a99ef/docs/website/src/spec/02-execution-environment/04-runners.rst)
 
-## Read-only preflight
+## Preflight history and current boundary
 
-Run `python scripts/genlayer_preflight.py`. It reports installed SDK/test pins, Python version, source hash/size, runner pin shape, configured target network, and the presence/shape (never value) of the deployment key. It exits nonzero while any blocker remains. Optional `--probe-rpc` makes one read-only `eth_chainId` request to the selected SDK network; it does not submit a transaction. It never prints a key or attempts deployment. A nonzero exit is expected until exact runner compatibility, authorization, wallet, network, and funding prerequisites are demonstrated.
+At the time of this historical audit, the preflight offered an optional `--probe-rpc` chain-ID request. That option has since been removed. The current Milestone 7 preflight is offline-only and emits a structured, fail-closed JSON report; it makes no RPC/network request and does not instantiate SDK clients or perform wallet, signing, funding, deployment, or transaction operations. See [`genlayer-milestone7-qualification.md`](genlayer-milestone7-qualification.md) for its schema, current blocker matrix, evidence limitations, and CI coverage.
 
-The preflight cannot establish validator consensus, source compilation against the target runner, a fee threshold, or production readiness. SDK `deploy_contract` is documented but is deliberately not invoked here.
+Neither the historical probe nor the current local preflight establishes validator consensus, source compilation against the exact target runner, a fee threshold, or production readiness. SDK `deploy_contract` is not invoked.
 
 ## Preserved policy and evidence controls
 

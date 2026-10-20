@@ -1,6 +1,6 @@
 # GenLayer milestone: procurement evaluation prototype
 
-> Historical Milestone 3 state. The application adapter was added later; current binding guarantees and limits are documented in [`genlayer-milestone5-adapter.md`](genlayer-milestone5-adapter.md). The direct-contract bypass and unverified target runtime limitations described below remain current.
+> Historical Milestone 3 state. The application adapter was added later; current binding guarantees and limits are documented in [`genlayer-milestone5-adapter.md`](genlayer-milestone5-adapter.md). The direct-contract bypass and unverified target runtime limitations described below remain current. For the current Milestone 7 offline qualification report and updated blocker matrix, see [`genlayer-milestone7-qualification.md`](genlayer-milestone7-qualification.md); this historical document's statements about running the old preflight are not current instructions.
 
 ## Verified runtime
 
