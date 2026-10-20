@@ -216,6 +216,21 @@ def test_malformed_requirement_set_is_rejected_at_deployment(direct_deploy):
         direct_deploy(str(CONTRACT), encoded(malformed))
 
 
+@pytest.mark.parametrize("bad_digest", ["a" * 63, "A" * 64, "g" * 64])
+def test_contract_rejects_invalid_digest_length_case_or_character(direct_deploy, bad_digest):
+    malformed = submission()
+    malformed["snapshot_sha256"] = bad_digest
+    with pytest.raises(Exception, match="lowercase SHA-256 hex digest"):
+        direct_deploy(str(CONTRACT), encoded(malformed))
+
+
+def test_contract_rejects_missing_digest_metadata(direct_deploy):
+    malformed = submission()
+    malformed.pop("snapshot_sha256")
+    with pytest.raises(Exception, match="missing or unexpected fields"):
+        direct_deploy(str(CONTRACT), encoded(malformed))
+
+
 def test_contract_accepts_digest_shaped_value_without_claiming_payload_integrity(direct_deploy):
     changed_payload = submission()
     changed_payload["requirements"][0]["text"] += " changed after snapshot creation"
@@ -224,6 +239,16 @@ def test_contract_accepts_digest_shaped_value_without_claiming_payload_integrity
     assert stored_submission["requirements"][0]["text"].endswith("changed after snapshot creation")
     assert stored_submission["snapshot_sha256"] == changed_payload["snapshot_sha256"]
     assert len(stored_submission["snapshot_sha256"]) == 64
+
+
+def test_contract_does_not_authenticate_a_modified_payload_with_a_fresh_digest(direct_deploy):
+    modified = submission()
+    modified["requirements"][0]["text"] = "Substituted requirement with a freshly computed digest."
+    refreshed_submission(modified)
+    contract = direct_deploy(str(CONTRACT), encoded(modified))
+    stored = json.loads(contract.get_submission())
+    assert stored["requirements"][0]["text"] == modified["requirements"][0]["text"]
+    assert stored["snapshot_sha256"] == modified["snapshot_sha256"]
 
 
 def test_malformed_intelligent_response_is_rejected_without_completing_evaluation(direct_vm, direct_deploy):

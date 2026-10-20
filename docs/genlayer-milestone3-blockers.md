@@ -12,9 +12,9 @@ The local Agent Mode host remains CPython 3.11.2 and does not have the GenLayer 
 
 The selectable policies are `mandatory_gate_optional_advisory_v1` (default: mandatory non-compliance is distinct from optional non-compliance; unresolved requirements yield inconclusive unless mandatory non-compliance exists) and `all_requirements_blocking_v1` (any non-compliance blocks). Insufficient and contradictory states are retained in unresolved requirements in either policy. They are evaluation summaries, not legal or award rules.
 
-The authenticated backend now has immutable `evaluation-snapshots` routes. They freeze all currently registered requirements and explicitly selected evidence records, including source excerpts and immutable document-version provenance, into a canonical payload and SHA-256 fingerprint. Canonical bytes are Python `json.dumps(base, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")`, with the `snapshot_sha256` field omitted; the lowercase SHA-256 hex digest is then attached. This is only a preparation boundary: route state is `prepared_not_submitted`. There is no transaction submission, wallet, contract address, transaction hash, network status polling, result callback, or finalization API.
+The authenticated backend freezes all current requirements and selected evidence into a `prepared_not_submitted` snapshot. It computes the documented canonical SHA-256, stores the payload/digest and an internal HMAC, enforces API-level append-only triggers, and verifies row HMAC, IDs, and recomputed digest before listing or returning snapshots. See `docs/api-contracts.md` and `docs/genlayer-milestone4-integrity.md` for the precise trust boundary, migration behavior, and distinction between payload integrity, backend row authentication, evidence provenance, and contract-result correspondence.
 
-**Integrity trust boundary:** the contract checks only that the supplied digest is 64 lowercase hex characters and preserves it. Research did not establish SHA-256 support for the exact deployed GenVM runner behind this contract (`py-genlayer:latest`); pinned Direct Mode executes Python directly and cannot prove WASM runner support. Accordingly, no in-contract recomputation is claimed. A changed payload with a digest-shaped value can be accepted. Integrity therefore depends on authenticated backend snapshot creation and the future adapter passing/associating the exact stored payload and comparing both returned snapshot ID and digest. See `docs/api-contracts.md` for serialization details.
+The contract still checks only digest shape. Direct construction with modified data and a shaped or newly computed digest remains possible because there is no backend adapter and the exact target GenVM runner has not been pinned/tested. HMAC is a backend-local check and is not passed to or verified by the contract. No transaction, wallet, contract address, transaction hash, network status polling, result callback, or finalization API exists.
 
 ## Tests and limitations
 
@@ -22,13 +22,13 @@ Run:
 
 ```sh
 .venv/bin/python -m pytest tests/genlayer_direct -v
-python -m unittest backend.test_api -v
+python -m unittest backend.test_api backend.test_genlayer_preflight -v
 npm run typecheck
 npm test
 npm run build
 npm run lint
 ```
 
-The Direct Mode suite deploys the actual contract in the pinned in-memory runner and tests valid versus tampered-but-digest-shaped payloads (demonstrating the digest trust boundary), malformed model output, fabricated citations, source-backed references, provenance, stable schema, and mandatory/optional policy combinations across compliant, non-compliant, insufficient, and contradictory statuses. Direct Mode does not perform real nondeterministic model inference or validator consensus: its documented `direct_vm.mock_llm` cheatcode returns fixed model text while real contract Python code, storage, methods, and state transitions execute. This is not a live deployment or production-readiness claim.
+The Direct Mode suite deploys the actual contract in the pinned in-memory runner and tests accepted-but-unverified stale and newly recomputed digests, rejection of malformed digest metadata, malformed model output, fabricated citations, cited versus uncited source-backed references, backend snapshot round-trip, the absence of a contract-to-database binding, stable schema, and both mandatory/optional policies. Backend tests exercise canonical digest verification and the internal HMAC boundary, including original-digest tampering, freshly rehashed tampering without the key, corrupted identity, missing tags, and legacy-schema migration. Direct Mode does not perform real nondeterministic model inference or validator consensus: its documented `direct_vm.mock_llm` cheatcode returns fixed model text while real contract Python code, storage, methods, and state transitions execute. This is not a live deployment or production-readiness claim.
 
 Known constraints: only supplied `text/plain` byte-range evidence is supported; PDF/DOCX extraction, source authenticity, OCR, amendment semantic comparison, verified objective fact extraction, and adversarial prompt-injection resistance are not solved. A model-supported status is an evidence interpretation, not legal advice or an automatic award. Procurement documents may be confidential; contract arguments/calldata/state may be public on a live network, so the prototype is intentionally not deployed.

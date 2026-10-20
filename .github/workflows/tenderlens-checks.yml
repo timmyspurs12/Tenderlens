@@ -33,8 +33,11 @@ jobs:
       - name: Build frontend
         run: npm run build
 
-      - name: Run backend tests
-        run: python -m unittest backend.test_api
+      - name: Lint frontend
+        run: npm run lint
+
+      - name: Run backend and deployment-preflight tests
+        run: python -m unittest backend.test_api backend.test_genlayer_preflight
 
   genlayer-direct-mode:
     name: GenLayer Direct Mode
