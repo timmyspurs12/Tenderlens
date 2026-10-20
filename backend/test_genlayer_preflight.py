@@ -26,6 +26,9 @@ class GenLayerPreflightTests(unittest.TestCase):
         (self.root / "requirements-genlayer.in").write_text(
             "genlayer-py==0.18.0\n", encoding="utf-8"
         )
+        (self.root / "requirements-genlayer.lock.txt").write_text(
+            (ROOT / "requirements-genlayer.lock.txt").read_text(encoding="utf-8"), encoding="utf-8"
+        )
         source = (ROOT / "tests/genlayer_direct/contracts/procurement_evaluation.py").read_text(encoding="utf-8")
         (self.root / "tests/genlayer_direct/contracts/procurement_evaluation.py").write_text(source, encoding="utf-8")
 
@@ -50,6 +53,7 @@ class GenLayerPreflightTests(unittest.TestCase):
         self.assertEqual(self.by_name(checks, "Contract runner pin")["level"], "BLOCK")
         self.assertEqual(self.by_name(checks, "WASM compatibility")["level"], "BLOCK")
         self.assertEqual(self.by_name(checks, "Target network")["level"], "BLOCK")
+        self.assertEqual(self.by_name(checks, "GenLayer dependency lock")["level"], "PASS")
         self.assertEqual(self.by_name(checks, "Deployment account")["level"], "BLOCK")
         self.assertIn("No deployment transaction", format_report(checks))
 
@@ -63,6 +67,7 @@ class GenLayerPreflightTests(unittest.TestCase):
         self.assertNotIn(secret, report)
         self.assertIn("value is not displayed", report)
         self.assertEqual(self.by_name(checks, "Deployment account")["level"], "PASS")
+        self.assertEqual(self.by_name(checks, "RPC")["level"], "BLOCK")
 
     def test_optional_rpc_probe_uses_pinned_sdk_chain_id_and_endpoint(self):
         calls = []
@@ -78,8 +83,9 @@ class GenLayerPreflightTests(unittest.TestCase):
         source = contract.read_text(encoding="utf-8").replace("py-genlayer:latest", "py-genlayer:" + "01" * 26)
         contract.write_text(source, encoding="utf-8")
         checks = self.checks({"TENDERLENS_GENLAYER_NETWORK": "testnet_bradbury"})
-        self.assertEqual(self.by_name(checks, "Contract runner pin")["level"], "PASS")
+        self.assertEqual(self.by_name(checks, "Contract runner pin")["level"], "INFO")
         self.assertEqual(self.by_name(checks, "Target network")["level"], "PASS")
+        self.assertEqual(self.by_name(checks, "RPC")["level"], "BLOCK")
         self.assertEqual(self.by_name(checks, "Funding")["level"], "BLOCK")
 
     def test_rpc_failure_and_wrong_chain_are_explicit_blockers(self):

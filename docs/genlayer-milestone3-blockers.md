@@ -1,5 +1,7 @@
 # GenLayer milestone: procurement evaluation prototype
 
+> Historical Milestone 3 state. The application adapter was added later; current binding guarantees and limits are documented in [`genlayer-milestone5-adapter.md`](genlayer-milestone5-adapter.md). The direct-contract bypass and unverified target runtime limitations described below remain current.
+
 ## Verified runtime
 
 The local Agent Mode host remains CPython 3.11.2 and does not have the GenLayer packages installed. Runtime verification is delegated to GitHub Actions on the writable feature branch. The workflow provisions Python 3.12, Node 22.14.0, and `uv==0.13.3`, installs the lockfiles, checks `genlayer-test==0.29.2`, `genlayer-py==0.18.0`, `pytest==9.1.1`, source commit `343e3a358f9e235a93b49c60721ce7676585ff07`, and `gltest --help`, then runs the Direct Mode suite.

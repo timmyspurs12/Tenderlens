@@ -15,6 +15,11 @@ jobs:
       - name: Get the code
         uses: actions/checkout@v5
 
+      - name: Install Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
       - name: Install Node.js
         uses: actions/setup-node@v5
         with:
@@ -37,7 +42,7 @@ jobs:
         run: npm run lint
 
       - name: Run backend and deployment-preflight tests
-        run: python -m unittest backend.test_api backend.test_genlayer_preflight
+        run: python -m unittest backend.test_api backend.test_evaluation_adapter backend.test_genlayer_preflight
 
   genlayer-direct-mode:
     name: GenLayer Direct Mode
@@ -64,6 +69,20 @@ jobs:
 
       - name: Install and verify locked GenLayer environment
         run: bash .devcontainer/setup.sh --genlayer-only
+
+      - name: Verify pinned environment and report external deployment blockers
+        shell: bash
+        run: |
+          set +e
+          output=$( .venv/bin/python scripts/genlayer_preflight.py 2>&1 )
+          status=$?
+          set -e
+          printf '%s\n' "$output"
+          test "$status" -eq 2
+          if printf '%s\n' "$output" | grep -Eq '^\[BLOCK\] (Python|GenLayer dependency lock|Installed SDK|Direct Mode test pin|Pytest pin):'; then
+            echo "Pinned CI environment did not satisfy repository dependencies." >&2
+            exit 1
+          fi
 
       - name: Run GenLayer Direct Mode contract tests
         run: .venv/bin/python -m pytest tests/genlayer_direct -v

@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from backend.app import TenderLensAPI
+from backend.evaluation_adapter import EvaluationAdapter
 
 CONTRACT = Path(__file__).parent / "contracts" / "procurement_evaluation.py"
 
@@ -60,14 +61,19 @@ def test_contract_evaluates_backend_generated_snapshot(tmp_path, direct_vm, dire
     assert retrieved["submission"] == snapshot["submission"]
     assert retrieved["input_sha256"] == snapshot["input_sha256"]
 
+    adapter = EvaluationAdapter(api)
+    prepared = adapter.prepare(snapshot["snapshot_id"], "direct-mode-valid-snapshot", expected_policy="mandatory_gate_optional_advisory_v1")
+    assert prepared["contract_input_json"] == encoded(retrieved["submission"])
+    assert prepared["snapshot_sha256"] == retrieved["input_sha256"]
+
     direct_vm.mock_llm(
         r"Classify this requirement using only the supplied evidence data",
         encoded({"status": "compliant", "reason": "The provided licence evidence supports the requirement.", "evidence_ids": [evidence["id"]]}),
     )
-    contract = direct_deploy(str(CONTRACT), encoded(retrieved["submission"]))
+    contract = direct_deploy(str(CONTRACT), prepared["contract_input_json"])
     result = json.loads(contract.evaluate())
     reference = result["decisions"][0]["evidence_refs"][0]
-    assert result["evaluation_id"] == retrieved["submission"]["evaluation_id"]
+    assert result["evaluation_id"] == json.loads(prepared["contract_input_json"])["evaluation_id"]
     assert result["tender_id"] == tender["id"]
     assert result["snapshot_id"] == snapshot["snapshot_id"]
     assert result["snapshot_sha256"] == snapshot["input_sha256"]

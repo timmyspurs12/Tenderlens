@@ -75,9 +75,16 @@ def collect_checks(root: Path, env: dict[str, str], versions: dict[str, str | No
 
     requirements = (root / "requirements-genlayer.in").read_text(encoding="utf-8")
     if f"genlayer-py=={EXPECTED_SDK}" in requirements:
-        checks.append(_check("PASS", "SDK lock", f"Repository pins genlayer-py=={EXPECTED_SDK}."))
+        checks.append(_check("PASS", "SDK requirements", f"Input requirements pin genlayer-py=={EXPECTED_SDK}."))
     else:
-        checks.append(_check("BLOCK", "SDK lock", f"Pin genlayer-py=={EXPECTED_SDK} or re-audit the SDK change."))
+        checks.append(_check("BLOCK", "SDK requirements", f"Pin genlayer-py=={EXPECTED_SDK} or re-audit the SDK change."))
+    lock_path = root / "requirements-genlayer.lock.txt"
+    lock_text = lock_path.read_text(encoding="utf-8") if lock_path.exists() else ""
+    suite_reference = f"genlayer-testing-suite.git@{EXPECTED_TEST_SUITE_COMMIT}"
+    if f"genlayer-py=={EXPECTED_SDK}" in lock_text and suite_reference in lock_text and f"pytest=={EXPECTED_PYTEST}" in lock_text:
+        checks.append(_check("PASS", "GenLayer dependency lock", "SDK, Direct Mode source commit, and pytest pins are present in the generated lock."))
+    else:
+        checks.append(_check("BLOCK", "GenLayer dependency lock", "Regenerate and verify the lock containing the audited SDK, test-suite commit, and pytest pins."))
     if versions.get("genlayer-py") == EXPECTED_SDK:
         checks.append(_check("PASS", "Installed SDK", f"genlayer-py=={EXPECTED_SDK} is installed."))
     else:
@@ -101,7 +108,7 @@ def collect_checks(root: Path, env: dict[str, str], versions: dict[str, str | No
     if marker is None or not re.fullmatch(r"py-genlayer:" + runner_hash, marker.group(1)):
         checks.append(_check("BLOCK", "Contract runner pin", "The contract does not name a 256-bit GVM32 py-genlayer content hash. Pin the exact runner hash verified on the target network."))
     else:
-        checks.append(_check("PASS", "Contract runner pin", "A GVM32-shaped py-genlayer content reference is present; target-network availability still requires verification."))
+        checks.append(_check("INFO", "Contract runner pin", "A GVM32-shaped py-genlayer reference is present; shape alone does not establish that the artifact exists or is supported by the target."))
     checks.append(_check("BLOCK", "WASM compatibility", "Direct Mode is ordinary Python execution; no matching GenVM/WASM compile or deployed-runtime smoke test is recorded."))
 
     network = env.get("TENDERLENS_GENLAYER_NETWORK", "")
@@ -110,7 +117,7 @@ def collect_checks(root: Path, env: dict[str, str], versions: dict[str, str | No
         checks.append(_check("PASS", "Target network", f"Selected {network} (SDK chain ID {chain_id})."))
         rpc_url = env.get("TENDERLENS_GENLAYER_RPC_URL") or default_rpc
         if rpc_probe is None:
-            checks.append(_check("INFO", "RPC", "Not probed. Set --probe-rpc to perform a read-only chain-ID check."))
+            checks.append(_check("BLOCK", "RPC", "Target selection is not endpoint verification. Run --probe-rpc for a read-only chain-ID check."))
         else:
             ok, detail = rpc_probe(rpc_url, chain_id)
             checks.append(_check("PASS" if ok else "BLOCK", "RPC", detail))
@@ -127,7 +134,7 @@ def collect_checks(root: Path, env: dict[str, str], versions: dict[str, str | No
     else:
         checks.append(_check("BLOCK", "Deployment account", "Configured private-key value has an invalid shape; value is not displayed."))
     checks.append(_check("BLOCK", "Funding", "No fee estimate or funded-wallet balance was verified; SDK/network fee requirements must be checked before an authorized deployment."))
-    checks.append(_check("INFO", "Deployment path", "Repository has no deployment script or CLI pin; pinned genlayer-py exposes deploy_contract, but no adapter is implemented."))
+    checks.append(_check("INFO", "Deployment path", "An application adapter port exists, but no live GenLayer submitter or CLI pin is configured; pinned genlayer-py exposes deploy_contract."))
     return checks
 
 
