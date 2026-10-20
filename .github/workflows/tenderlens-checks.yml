@@ -63,4 +63,18 @@ jobs:
         run: bash .devcontainer/setup.sh --genlayer-only
 
       - name: Run GenLayer Direct Mode contract tests
-        run: .venv/bin/python -m pytest tests/genlayer_direct -v
+        id: direct-tests
+        run: |
+          set +e
+          .venv/bin/python -m pytest tests/genlayer_direct -v --tb=short 2>&1 | tee "$RUNNER_TEMP/direct-mode-pytest.log"
+          result=${PIPESTATUS[0]}
+          if [[ "$result" -ne 0 ]]; then
+            detail="$(grep -E '^E   |^FAILED |^ERROR ' "$RUNNER_TEMP/direct-mode-pytest.log" | tail -n 4 | tr '\n' ' ' | cut -c 1-500)"
+            if [[ -z "$detail" ]]; then detail="$(tail -n 5 "$RUNNER_TEMP/direct-mode-pytest.log" | tr '\n' ' ' | cut -c 1-500); fi
+            printf 'failure-detail=%s\n' "$detail" >> "$GITHUB_OUTPUT"
+          fi
+          exit "$result"
+
+      - name: Surface Direct Mode failure details: ${{ steps.direct-tests.outputs.failure-detail }}
+        if: always() && steps.direct-tests.outcome == 'failure'
+        run: echo "Direct Mode test failure summary is included in this step name."
