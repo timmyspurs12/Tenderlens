@@ -1,0 +1,2 @@
+# Pinned PEP 517 backend requirement for the official GenLayer Testing Suite source.
+setuptools==84.2.0
