@@ -408,6 +408,13 @@ class TenderLensAPI:
         c.execute("INSERT INTO evidence VALUES(?,?,?,?,?,?,?,?,?,?,?)",(record["id"],tid,self.workspace,req,doc,d["sha256"],start,end,excerpt,json.dumps(provenance),record["created_at"]))
         return 201,record
 
+def server_bind_config(environ=None):
+    """Return a PaaS-compatible bind address and prefer its assigned PORT."""
+    values=os.environ if environ is None else environ
+    host=values.get("TENDERLENS_HOST","0.0.0.0")
+    port=int(values.get("PORT") or values.get("TENDERLENS_PORT","8000"))
+    return host,port
+
 def create_app(*, evaluation_submitter=None):
     token=os.environ.get("TENDERLENS_API_TOKEN","")
     db=os.environ.get("TENDERLENS_DB_PATH","./var/tenderlens.sqlite3"); blobs=os.environ.get("TENDERLENS_BLOB_DIR","./var/documents")
@@ -417,5 +424,5 @@ def create_app(*, evaluation_submitter=None):
     return TenderLensAPI(db,blobs,token,os.environ.get("TENDERLENS_WORKSPACE","default"),
                          evaluation_submitter=evaluation_submitter,broadcast_authorized=broadcast_authorized)
 if __name__=="__main__":
-    app=create_app(); host=os.environ.get("TENDERLENS_HOST","127.0.0.1"); port=int(os.environ.get("TENDERLENS_PORT","8000"))
+    app=create_app(); host,port=server_bind_config()
     with make_server(host,port,app) as server: print(f"TenderLens API listening on {host}:{port}"); server.serve_forever()

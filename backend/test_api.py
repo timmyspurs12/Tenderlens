@@ -1,7 +1,7 @@
 import hashlib, io, json, os, sqlite3, tempfile, unittest
 from pathlib import Path
 from unittest.mock import patch
-from backend.app import TenderLensAPI, canonical_snapshot_digest, create_app
+from backend.app import TenderLensAPI, canonical_snapshot_digest, create_app, server_bind_config
 
 class FakeEvaluationSubmitter:
     def __init__(self): self.calls=0
@@ -59,6 +59,11 @@ class BackendAPITest(unittest.TestCase):
         status,rows,_=self.call('GET',f'/api/tenders/{tid}/documents'); self.assertEqual(status,200); self.assertEqual([r['version'] for r in rows['items']],[1,2])
     def test_rejects_weak_service_secret_at_startup(self):
         with self.assertRaises(ValueError): TenderLensAPI(Path(self.tmp.name)/'weak.sqlite',Path(self.tmp.name)/'weak-blobs','short')
+    def test_server_bind_defaults_to_public_interface_and_prefers_platform_port(self):
+        self.assertEqual(server_bind_config({}), ("0.0.0.0", 8000))
+        self.assertEqual(server_bind_config({"PORT": "10000", "TENDERLENS_PORT": "8001"}), ("0.0.0.0", 10000))
+        self.assertEqual(server_bind_config({"TENDERLENS_HOST": "127.0.0.1", "TENDERLENS_PORT": "9000"}), ("127.0.0.1", 9000))
+
     def test_healthz_is_public_and_confirms_database_readiness_without_leaking_details(self):
         status,body,headers=self.call('GET','/healthz',token='wrong')
         self.assertEqual(status,200)
