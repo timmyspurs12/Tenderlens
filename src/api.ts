@@ -4,7 +4,7 @@ export type DocumentRecord = { id: string; title: string; version?: string; stat
 export type Requirement = { id: string; text: string; category?: string; mandatory?: boolean; status?: string };
 
 const configuredBase = (import.meta as ImportMeta & { env: Record<string, string | undefined> }).env.VITE_API_BASE_URL;
-const base = configuredBase?.trim().replace(/\/+$/, '');
+const base = configuredBase?.trim().replace(/\/+$/, '') ?? (import.meta.env.PROD ? '/' : undefined);
 const DEFAULT_TIMEOUT_MS = 10_000;
 
 export type ApiErrorCode = 'API_NOT_CONFIGURED' | 'AUTH_REQUIRED' | 'HTTP_ERROR' | 'NETWORK_ERROR' | 'TIMEOUT' | 'INVALID_RESPONSE';
@@ -25,7 +25,7 @@ export function statusForApiError(error: unknown): ApiStatus {
 }
 
 function endpoint(path: string, apiBase?: string): string {
-  if (!apiBase) throw new ApiError('API_NOT_CONFIGURED', 'API_NOT_CONFIGURED');
+  if (apiBase === undefined || apiBase.trim() === '') throw new ApiError('API_NOT_CONFIGURED', 'API_NOT_CONFIGURED');
   const normalizedBase = apiBase.trim().replace(/\/+$/, '');
   const normalizedPath = path.startsWith('/') ? path : `/${path}`;
   return `${normalizedBase}${normalizedPath}`;
@@ -93,6 +93,24 @@ function parseTender(value: unknown): Tender[] {
 
 export async function loadTenders(apiBase = base): Promise<Tender[]> {
   return parseTender(await request<unknown>('/api/tenders', apiBase));
+}
+
+export async function checkGatewaySession(apiBase = base): Promise<void> {
+  const result = await request<unknown>('/api/auth/session', apiBase);
+  if (!isRecord(result) || result.authenticated !== true) {
+    throw new ApiError('INVALID_RESPONSE', 'The gateway did not confirm an authenticated session.');
+  }
+}
+
+export async function signIn(password: string, apiBase = base): Promise<void> {
+  const result = await request<unknown>('/api/auth/login', apiBase, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password }),
+  });
+  if (!isRecord(result) || result.authenticated !== true) {
+    throw new ApiError('INVALID_RESPONSE', 'The gateway did not confirm sign-in.');
+  }
 }
 
 export async function createTender(input: { title: string; reference: string; deadline?: string }, apiBase = base): Promise<Tender> {
