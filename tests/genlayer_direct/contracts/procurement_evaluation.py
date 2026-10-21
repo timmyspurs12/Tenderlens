@@ -1,8 +1,8 @@
-# { "Depends": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6" }
+# { "Depends": "py-genlayer:1zr6nqk597d97kg0dyxg0shhrykx5v02zjgnyrajapy4wlqvfvwh" }
 
 import json
 import re
-from genlayer import *
+import genlayer as gl
 
 
 SCHEMA_VERSION = "tenderlens.evaluation-submission.v1"
@@ -36,7 +36,7 @@ def _is_sha256(value: str) -> bool:
     )
 
 
-class ProcurementEvaluation(gl.Contract):
+class ProcurementEvaluation(gl.contract.Contract):
     submission_json: str
     result_json: str
     lifecycle_status: str

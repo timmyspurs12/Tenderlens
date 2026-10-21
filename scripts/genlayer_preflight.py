@@ -21,11 +21,11 @@ EXPECTED_SDK = "0.18.0"
 EXPECTED_TEST_SUITE = "0.29.2"
 EXPECTED_PYTEST = "9.1.1"
 EXPECTED_TEST_SUITE_COMMIT = "343e3a358f9e235a93b49c60721ce7676585ff07"
-# The GenLayer documentation at this immutable Git revision uses this content-addressed
-# runner in its contract examples and states that the identifier selects an exact runtime.
-# This only establishes the source reference's immutability, not network compatibility.
-OFFICIAL_IMMUTABLE_RUNTIME = "1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6"
-OFFICIAL_RUNTIME_DOC_URL = "https://github.com/genlayerlabs/genlayer-docs/blob/7c3ad7c4bc738a7c55d05df780dd76c2cb052db6/pages/developers/intelligent-contracts/first-contract.mdx"
+# This content-addressed runner is present in the official GenVM v0.3.0-rc7
+# runner bundle and is selected by the pinned Direct Mode suite's `latest` resolver.
+# Pinning it makes the tested artifact immutable; this does not prove target support.
+OFFICIAL_IMMUTABLE_RUNTIME = "1zr6nqk597d97kg0dyxg0shhrykx5v02zjgnyrajapy4wlqvfvwh"
+OFFICIAL_RUNTIME_SOURCE_URL = "https://github.com/genlayerlabs/genvm/releases/tag/v0.3.0-rc7"
 SUPPORTED_NETWORKS = {
     "studionet": (61999, "https://studio.genlayer.com/api"),
     "testnet_bradbury": (4221, "https://rpc-bradbury.genlayer.com"),
@@ -233,7 +233,7 @@ def collect_report(root: Path, env: dict[str, str], *, versions: dict[str, str |
         runtime_resolution = "Compare the reference against current official GenLayer docs and verify availability/compatibility for the selected target; do not infer it from tag shape."
     checks.append(_check(
         "runtime.artifact_immutability", runtime_status, runtime_detail,
-        f"Local contract directive: {('py-genlayer:' + dependency) if dependency is not None else 'not found'}. Official reference: {OFFICIAL_RUNTIME_DOC_URL}. No registry was contacted and no image was pulled.",
+        f"Local contract directive: {('py-genlayer:' + dependency) if dependency is not None else 'not found'}. Official source: {OFFICIAL_RUNTIME_SOURCE_URL}. No registry was contacted and no image was pulled.",
         runtime_resolution,
         requires_user_action=True, resolution_scope="external_read_only",
     ))
