@@ -1,11 +1,11 @@
 """Narrow compatibility shim for the pinned upstream Direct Mode runner.
 
-The runner's message injector looks under legacy SDK paths, while the pinned
-GenVM v0.6 SDK modules live under ``genlayer.py``. Its contract allocator also
-expects a removed ``_BuilderCtx`` API; adapt that one seam to the current
-stdlib's real ``_storage_build`` API. This preserves generated descriptors and
-real contract execution; it does not change application code or claim
-target-network compatibility.
+The runner's message injector and WASI codec look under legacy SDK paths,
+while the pinned GenVM v0.6 SDK modules live under ``genlayer.py``. Its contract
+allocator also expects a removed ``_BuilderCtx`` API; adapt that seam to the
+current stdlib's real ``_storage_build`` API. This preserves generated
+descriptors and real contract execution; it does not change application code
+or claim target-network compatibility.
 
 Upstream tracking: https://github.com/genlayerlabs/genlayer-testing-suite/issues/113
 """
@@ -16,6 +16,7 @@ from importlib.metadata import version
 
 import gltest.direct.loader as direct_loader
 import gltest.direct.vm as direct_vm
+import gltest.direct.wasi_mock as direct_wasi_mock
 
 
 if version("genlayer-test") != "0.30.0rc2" or version("genlayer-py") != "0.19.0rc2":
@@ -61,5 +62,6 @@ def _runtime_address_u256():
 
 
 direct_loader.import_calldata = _runtime_calldata
+direct_wasi_mock.import_calldata = _runtime_calldata
 direct_loader.import_address = _runtime_address
 direct_vm.import_address_u256 = _runtime_address_u256

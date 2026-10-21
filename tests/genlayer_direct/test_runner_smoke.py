@@ -10,6 +10,10 @@ def test_runtime_storage_descriptor_probe(direct_vm):
     from gltest.direct.loader import load_contract_class
 
     contract_cls = load_contract_class(CONTRACT, direct_vm)
+    from gltest.direct import wasi_mock
+
+    runtime_calldata = importlib.import_module("genlayer.py.calldata")
+    assert wasi_mock.import_calldata() is runtime_calldata
     storage = importlib.import_module("genlayer.py.storage")
     generate = importlib.import_module("genlayer.py.storage._internal.generate")
     type_desc = generate._storage_build(contract_cls, {})
