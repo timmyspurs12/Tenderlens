@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from importlib import import_module
 from importlib.metadata import version
+import sys
 
 import gltest.direct.loader as direct_loader
 import gltest.direct.vm as direct_vm
@@ -22,7 +23,26 @@ if version("genlayer-test") != "0.30.0rc2" or version("genlayer-py") != "0.19.0r
     raise RuntimeError("Direct Mode compatibility shim requires the exact locked GenLayer toolchain")
 
 
+def _install_legacy_storage_imports():
+    """Expose the current SDK storage package at the path gltest 0.30 imports."""
+    storage = import_module("genlayer.py.storage")
+    internal = import_module("genlayer.py.storage._internal")
+    generate = import_module("genlayer.py.storage._internal.generate")
+
+    # The pinned Direct Mode loader imports these legacy names in
+    # _allocate_contract. This SDK release moved the implementation beneath
+    # genlayer.py; without aliases, its ImportError fallback constructs the
+    # contract directly and bypasses the generated storage type descriptor.
+    sys.modules.setdefault("genlayer.storage", storage)
+    sys.modules.setdefault("genlayer.storage._internal", internal)
+    sys.modules.setdefault("genlayer.storage._internal.generate", generate)
+    genlayer = import_module("genlayer")
+    if not hasattr(genlayer, "storage"):
+        genlayer.storage = storage
+
+
 def _runtime_calldata():
+    _install_legacy_storage_imports()
     return import_module("genlayer.py.calldata")
 
 

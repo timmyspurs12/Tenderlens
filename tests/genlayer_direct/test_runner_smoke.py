@@ -23,6 +23,7 @@ def test_runtime_storage_descriptor_probe(direct_vm):
         f"instance_dict={getattr(instance, '__dict__', None)!r}"
     )
     assert hasattr(instance, "__type_desc__"), diagnostic
+    assert "value" in instance.__type_desc__.props, diagnostic
 
 
 def test_direct_mode_deploy_read_and_write(direct_deploy):
