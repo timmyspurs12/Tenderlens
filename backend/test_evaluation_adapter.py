@@ -185,6 +185,35 @@ class EvaluationAdapterTests(unittest.TestCase):
         self.assertEqual(accepted["status"], "completed")
         self.assertEqual(self.adapter.accept_result(prepared["request_id"], ADDRESS_A, TX_EVAL_A, result, TX_EVAL_A), accepted)
 
+    def test_rejected_timed_out_and_failed_execution_states_remain_distinct(self):
+        scenarios = (
+            ("rejected", "transaction_undetermined"),
+            ("timed_out", "validators_timeout"),
+            ("failed", "contract_execution_failed"),
+        )
+        for index, (expected_state, failure_code) in enumerate(scenarios):
+            with self.subTest(expected_state=expected_state):
+                snapshot = self.snapshot()
+                prepared = self.adapter.prepare(snapshot["snapshot_id"], f"terminal-{index}")
+                self.assertTrue(self.adapter.claim_submission(prepared["request_id"]))
+                lifecycle = self.adapter.lifecycle(prepared["request_id"])
+                lifecycle.record_network("testnet_asimov", 4221)
+                lifecycle.deployment_started()
+                lifecycle.deployment_submitted(TX_DEPLOY_A)
+                if expected_state == "rejected":
+                    lifecycle.rejected(failure_code, "undetermined")
+                elif expected_state == "timed_out":
+                    lifecycle.timed_out(failure_code, "validators_timeout")
+                else:
+                    lifecycle.deployment_finalized(ADDRESS_A)
+                    lifecycle.evaluation_started()
+                    lifecycle.evaluation_submitted(TX_EVAL_A)
+                    lifecycle.failed(failure_code, "finalized")
+                request = self.adapter.get_request(prepared["request_id"])
+                self.assertEqual(request["lifecycle_state"], expected_state)
+                self.assertEqual(request["failure_code"], failure_code)
+                self.assertEqual(request["status"], "submitted")
+
     def test_tx_hash_database_write_failure_leaves_unknown_and_never_retries(self):
         snapshot = self.snapshot()
         calls = []

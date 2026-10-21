@@ -95,17 +95,31 @@ class SubmissionLifecycle:
                 raise AdapterError("request_not_found")
             if row["lifecycle_state"] not in allowed and row["lifecycle_state"] != state:
                 raise AdapterError("invalid_lifecycle_transition")
-            if row["lifecycle_state"] == state:
-                immutable_fields = {"network_name", "chain_id", "contract_address", "deployment_tx_hash", "evaluation_tx_hash"}
-                for name, value in fields.items():
-                    if name not in immutable_fields:
-                        continue
-                    existing = row[name]
-                    if existing is not None and value is not None and str(existing).lower() != str(value).lower():
-                        raise AdapterError("lifecycle_reference_conflict")
+            immutable_fields = {
+                "network_name", "chain_id", "contract_address", "deployment_tx_hash",
+                "evaluation_tx_hash", "deployment_evm_tx_hash", "evaluation_evm_tx_hash",
+                "signer_address", "fee_quote_json", "estimated_cost_wei",
+                "max_total_cost_wei", "wallet_balance_wei",
+            }
+            reference_fields = {
+                "contract_address", "deployment_tx_hash", "evaluation_tx_hash",
+                "deployment_evm_tx_hash", "evaluation_evm_tx_hash", "signer_address",
+            }
+            for name, value in fields.items():
+                if name not in immutable_fields:
+                    continue
+                existing = row[name]
+                if existing is None or value is None:
+                    continue
+                left, right = str(existing), str(value)
+                if name in reference_fields:
+                    left, right = left.lower(), right.lower()
+                if left != right:
+                    raise AdapterError("lifecycle_reference_conflict")
+            has_genlayer_reference = any(row[name] for name in ("deployment_tx_hash", "evaluation_tx_hash"))
             coarse = "completed" if state == "completed" else (
-                "submitted" if state in {"evaluation_submitted", "pending", "finalized"} or
-                (state in {"outcome_unknown", "failed"} and (row["deployment_tx_hash"] or row["evaluation_tx_hash"]))
+                "submitted" if state in {"evaluation_submitted", "pending", "finalized", "rejected", "timed_out"} or
+                (state in {"outcome_unknown", "failed"} and has_genlayer_reference)
                 else "submitting" if state != "prepared" else "prepared")
             assignments = ",".join(f"{name}=?" for name in fields)
             conn.execute(f"UPDATE evaluation_requests SET status=?,{assignments} WHERE request_id=?",
@@ -121,13 +135,42 @@ class SubmissionLifecycle:
         return self._change({"submission_in_progress"}, "submission_in_progress",
                             fields={"network_name": network_name, "chain_id": chain_id})
 
+    def record_preflight_report(self, *, signer_address: str, fee_quote_json: str,
+                                estimated_cost_wei: int, max_total_cost_wei: int,
+                                wallet_balance_wei: int):
+        if not isinstance(signer_address, str) or not CONTRACT_ADDRESS.fullmatch(signer_address):
+            raise AdapterError("invalid_signer_address")
+        if not isinstance(fee_quote_json, str) or len(fee_quote_json.encode("utf-8")) > 65_536:
+            raise AdapterError("invalid_fee_quote_report")
+        for value in (estimated_cost_wei, max_total_cost_wei, wallet_balance_wei):
+            if type(value) is not int or value < 0:
+                raise AdapterError("invalid_cost_report")
+        if estimated_cost_wei <= 0 or max_total_cost_wei < estimated_cost_wei or wallet_balance_wei < estimated_cost_wei:
+            raise AdapterError("invalid_cost_report")
+        return self._change(
+            {"submission_in_progress"}, "submission_in_progress",
+            fields={
+                "signer_address": signer_address.lower(),
+                "fee_quote_json": fee_quote_json,
+                "estimated_cost_wei": str(estimated_cost_wei),
+                "max_total_cost_wei": str(max_total_cost_wei),
+                "wallet_balance_wei": str(wallet_balance_wei),
+            },
+        )
+
     def deployment_started(self):
         return self._change({"submission_in_progress"}, "deployment_submission_in_progress")
 
+    def deployment_broadcast(self, evm_tx_hash: str):
+        self.adapter._validate_tx_ref(evm_tx_hash, "deployment_evm_tx_hash")
+        return self._change({"deployment_submission_in_progress"}, "deployment_submission_in_progress",
+                            fields={"deployment_evm_tx_hash": evm_tx_hash.lower()},
+                            network_status="EVM_BROADCAST_ATTEMPT")
+
     def deployment_submitted(self, tx_hash: str):
         self.adapter._validate_tx_ref(tx_hash, "deployment_tx_hash")
-        return self._change({"deployment_submission_in_progress"}, "deployment_submitted",
-                            fields={"deployment_tx_hash": tx_hash.lower()})
+        return self._change({"deployment_submission_in_progress", "outcome_unknown", "pending"},
+                            "deployment_submitted", fields={"deployment_tx_hash": tx_hash.lower()})
 
     def deployment_finalized(self, contract_address: str):
         if not isinstance(contract_address, str) or not CONTRACT_ADDRESS.fullmatch(contract_address):
@@ -138,16 +181,23 @@ class SubmissionLifecycle:
     def evaluation_started(self):
         return self._change({"deployment_finalized"}, "evaluation_submission_in_progress")
 
+    def evaluation_broadcast(self, evm_tx_hash: str):
+        self.adapter._validate_tx_ref(evm_tx_hash, "evaluation_evm_tx_hash")
+        return self._change({"evaluation_submission_in_progress"}, "evaluation_submission_in_progress",
+                            fields={"evaluation_evm_tx_hash": evm_tx_hash.lower()},
+                            network_status="EVM_BROADCAST_ATTEMPT")
+
     def evaluation_submitted(self, tx_hash: str):
         self.adapter._validate_tx_ref(tx_hash, "evaluation_tx_hash")
-        return self._change({"evaluation_submission_in_progress"}, "evaluation_submitted",
-                            fields={"evaluation_tx_hash": tx_hash.lower()})
+        return self._change({"evaluation_submission_in_progress", "outcome_unknown", "pending"},
+                            "evaluation_submitted", fields={"evaluation_tx_hash": tx_hash.lower()})
 
     def pending(self, network_status: str):
         if not isinstance(network_status, str) or not network_status or len(network_status) > 80:
             raise AdapterError("invalid_network_status")
-        return self._change({"deployment_submitted", "evaluation_submitted", "pending", "outcome_unknown"},
-                            "pending", network_status=network_status)
+        return self._change({"deployment_submission_in_progress", "deployment_submitted",
+                             "evaluation_submission_in_progress", "evaluation_submitted",
+                             "pending", "outcome_unknown"}, "pending", network_status=network_status)
 
     def finalized(self):
         return self._change({"evaluation_submitted", "pending", "outcome_unknown"}, "finalized",
@@ -160,6 +210,18 @@ class SubmissionLifecycle:
                              "deployment_finalized", "evaluation_submission_in_progress", "evaluation_submitted",
                              "pending", "outcome_unknown", "finalized"}, "failed", network_status=network_status,
                             failure_code=code)
+
+    def rejected(self, code: str, network_status: str | None = None):
+        if not isinstance(code, str) or not re.fullmatch(r"[a-z0-9_]{1,80}", code):
+            raise AdapterError("invalid_failure_code")
+        return self._change({"deployment_submitted", "evaluation_submitted", "pending", "outcome_unknown"},
+                            "rejected", network_status=network_status, failure_code=code)
+
+    def timed_out(self, code: str, network_status: str | None = None):
+        if not isinstance(code, str) or not re.fullmatch(r"[a-z0-9_]{1,80}", code):
+            raise AdapterError("invalid_failure_code")
+        return self._change({"deployment_submitted", "evaluation_submitted", "pending", "outcome_unknown"},
+                            "timed_out", network_status=network_status, failure_code=code)
 
     def outcome_unknown(self, network_status: str | None = None):
         return self._change({"submission_in_progress", "deployment_submission_in_progress", "deployment_submitted",
@@ -321,6 +383,18 @@ class EvaluationAdapter:
             raise AdapterError("stale_snapshot")
         return row, response, raw_payload, submission
 
+    def verified_preflight_submission(self, snapshot_id: str, tender_id: str,
+                                      expected_policy: str | None = None) -> VerifiedSubmission:
+        if not isinstance(tender_id, str) or not valid_id(tender_id):
+            raise AdapterError("invalid_tender_id")
+        row, response, raw_payload, submission = self._verified_snapshot(snapshot_id, expected_policy)
+        if row["tender_id"] != tender_id:
+            raise AdapterError("snapshot_tender_mismatch")
+        # The snapshot ID is used only as a local correlation value for this
+        # no-broadcast preview; no evaluation request or idempotency claim is created.
+        return _make_verified_submission(raw_payload, snapshot_id, snapshot_id,
+                                         response["input_sha256"], submission["aggregation_policy"])
+
     def prepare(self, snapshot_id: str, idempotency_key: str, expected_policy: str | None = None) -> dict[str, Any]:
         if not isinstance(idempotency_key, str) or not idempotency_key.strip() or len(idempotency_key) > 128:
             raise AdapterError("invalid_idempotency_key")
@@ -360,6 +434,13 @@ class EvaluationAdapter:
             "contract_address": request["contract_address"],
             "deployment_tx_hash": request["deployment_tx_hash"],
             "evaluation_tx_hash": request["evaluation_tx_hash"],
+            "deployment_evm_tx_hash": request["deployment_evm_tx_hash"],
+            "evaluation_evm_tx_hash": request["evaluation_evm_tx_hash"],
+            "signer_address": request["signer_address"],
+            "fee_quote_json": request["fee_quote_json"],
+            "estimated_cost_wei": request["estimated_cost_wei"],
+            "max_total_cost_wei": request["max_total_cost_wei"],
+            "wallet_balance_wei": request["wallet_balance_wei"],
             "contract_input_json": raw_payload,
             "created_at": request["created_at"],
         }
@@ -378,15 +459,27 @@ class EvaluationAdapter:
             if prepared.get("deployment_tx_hash") or prepared["lifecycle_state"] == "completed":
                 return {key: value for key, value in prepared.items() if key != "contract_input_json"}
             raise AdapterError("submission_outcome_unknown")
+        verified_input = _make_verified_submission(
+            prepared["contract_input_json"], prepared["request_id"], prepared["snapshot_id"],
+            prepared["snapshot_sha256"], prepared["policy_version"],
+        )
+        validate_submission = getattr(submitter, "validate_submission", None)
+        if callable(validate_submission):
+            validate_submission(
+                verified_input, request_id=prepared["request_id"], snapshot_id=prepared["snapshot_id"],
+                snapshot_sha256=prepared["snapshot_sha256"], policy_version=prepared["policy_version"],
+            )
         runtime = submitter.prepare() if callable(getattr(submitter, "prepare", None)) else None
+        if callable(validate_submission):
+            validate_submission(
+                verified_input, request_id=prepared["request_id"], snapshot_id=prepared["snapshot_id"],
+                snapshot_sha256=prepared["snapshot_sha256"], policy_version=prepared["policy_version"],
+                runtime=runtime,
+            )
         if not self.claim_submission(prepared["request_id"]):
             raise AdapterError("submission_outcome_unknown")
         lifecycle = SubmissionLifecycle(self, prepared["request_id"])
         try:
-            verified_input = _make_verified_submission(
-                prepared["contract_input_json"], prepared["request_id"], prepared["snapshot_id"],
-                prepared["snapshot_sha256"], prepared["policy_version"],
-            )
             outcome = submitter(
                 verified_input,
                 request_id=prepared["request_id"], snapshot_id=prepared["snapshot_id"],
@@ -397,26 +490,39 @@ class EvaluationAdapter:
             state = self.get_request(prepared["request_id"])
             if state.get("failure_code") == "result_verification_failed":
                 raise AdapterError("result_verification_failed") from None
-            if state["lifecycle_state"] not in {"failed", "pending", "outcome_unknown", "finalized"}:
+            if state["lifecycle_state"] not in {
+                "failed", "rejected", "timed_out", "pending", "outcome_unknown", "finalized"
+            }:
                 try:
                     lifecycle.outcome_unknown()
                 except Exception:
                     pass
-            if state["lifecycle_state"] == "failed":
+            if state["lifecycle_state"] in {"failed", "rejected", "timed_out"}:
                 raise AdapterError("submission_failed") from None
             raise AdapterError("submission_outcome_unknown") from None
         if not isinstance(outcome, dict):
             raise AdapterError("invalid_submission_outcome")
-        allowed = {"contract_address", "deployment_tx_hash", "evaluation_tx_hash", "result_json", "result_reference"}
-        if set(outcome) - allowed or not {"contract_address", "deployment_tx_hash", "evaluation_tx_hash"}.issubset(outcome):
+        allowed = {
+            "contract_address", "deployment_tx_hash", "evaluation_tx_hash",
+            "deployment_evm_tx_hash", "evaluation_evm_tx_hash", "result_json", "result_reference",
+        }
+        required = {"contract_address", "deployment_tx_hash", "evaluation_tx_hash"}
+        if set(outcome) - allowed or not required.issubset(outcome):
             raise AdapterError("invalid_submission_references")
         current = self.get_request(prepared["request_id"])
-        refs = (outcome["contract_address"], outcome["deployment_tx_hash"], outcome["evaluation_tx_hash"])
+        refs = tuple(outcome[name] for name in ("contract_address", "deployment_tx_hash", "evaluation_tx_hash"))
         stored = tuple(current.get(name) for name in ("contract_address", "deployment_tx_hash", "evaluation_tx_hash"))
         if not all(stored):
             raise AdapterError("submission_lifecycle_reference_missing")
         if tuple(value.lower() for value in stored) != tuple(value.lower() for value in refs):
             raise AdapterError("submission_reference_conflict")
+        evm_ref_names = ("deployment_evm_tx_hash", "evaluation_evm_tx_hash")
+        for name in evm_ref_names:
+            returned, persisted = outcome.get(name), current.get(name)
+            if returned is None and persisted is None:
+                continue
+            if not isinstance(returned, str) or not isinstance(persisted, str) or returned.lower() != persisted.lower():
+                raise AdapterError("submission_reference_conflict")
         if "result_json" in outcome:
             if current["lifecycle_state"] != "finalized":
                 raise AdapterError("result_before_finalization")
@@ -428,7 +534,9 @@ class EvaluationAdapter:
                     "result_verification_failed", "RESULT_VERIFICATION_FAILED")
                 raise AdapterError("result_verification_failed") from None
             return {**result, "contract_address": refs[0], "deployment_tx_hash": refs[1],
-                    "evaluation_tx_hash": refs[2], "policy_version": prepared["policy_version"]}
+                    "evaluation_tx_hash": refs[2], "deployment_evm_tx_hash": current.get("deployment_evm_tx_hash"),
+                    "evaluation_evm_tx_hash": current.get("evaluation_evm_tx_hash"),
+                    "policy_version": prepared["policy_version"]}
         return {**current, "snapshot_id": prepared["snapshot_id"],
                 "snapshot_sha256": prepared["snapshot_sha256"], "policy_version": prepared["policy_version"]}
 
@@ -635,6 +743,8 @@ class EvaluationAdapter:
             return {key: row[key] for key in (
                 "request_id", "snapshot_id", "input_sha256", "policy_version", "status", "lifecycle_state",
                 "network_name", "chain_id", "last_network_status", "failure_code",
-                "contract_address", "deployment_tx_hash", "evaluation_tx_hash", "result_reference",
-                "created_at", "updated_at",
+                "contract_address", "deployment_tx_hash", "evaluation_tx_hash",
+                "deployment_evm_tx_hash", "evaluation_evm_tx_hash", "signer_address",
+                "fee_quote_json", "estimated_cost_wei", "max_total_cost_wei", "wallet_balance_wei",
+                "result_reference", "created_at", "updated_at",
             )}

@@ -26,6 +26,28 @@ class InvalidResultSubmitter(FakeEvaluationSubmitter):
                        result_reference="0x"+"2"*64)
         return outcome
 
+
+class FakePreflightSubmitter:
+    def __init__(self, *, tamper=None):
+        self.calls=[]
+        self.tamper=tamper
+    def preflight(self, verified, *, snapshot_id, snapshot_sha256, policy_version):
+        self.calls.append((verified.contract_input_json, snapshot_id, snapshot_sha256, policy_version))
+        report={
+            "schema_version":"tenderlens.genlayer-preflight.v1",
+            "snapshot_id":snapshot_id,
+            "snapshot_sha256":snapshot_sha256,
+            "contract_input_sha256":hashlib.sha256(verified.contract_input_json.encode("utf-8")).hexdigest(),
+            "preflight_outcome":"offline_test_double_only",
+        }
+        if self.tamper=="binding":
+            report["snapshot_sha256"]="f"*64
+        canonical=json.dumps(report,sort_keys=True,separators=(",",":"),ensure_ascii=False)
+        report["report_sha256"]=hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        if self.tamper=="digest":
+            report["report_sha256"]="f"*64
+        return report
+
 class BackendAPITest(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory(); root=Path(self.tmp.name)
@@ -183,6 +205,59 @@ class BackendAPITest(unittest.TestCase):
         self.assertEqual(status,200)
         self.assertEqual(state['request']['evaluation_tx_hash'],'0x'+'2'*64)
         self.assertIsNone(state['result'])
+
+    def test_preflight_route_binds_report_to_verified_snapshot_without_creating_request(self):
+        tid,_,snapshot=self.create_snapshot()
+        submitter=FakePreflightSubmitter()
+        self.app.evaluation_submitter=submitter
+        path=f"/api/tenders/{tid}/evaluation-snapshots/{snapshot['snapshot_id']}/preflight"
+        status,report,_=self.call('POST',path,{})
+        self.assertEqual(status,200)
+        self.assertEqual(report["snapshot_id"],snapshot["snapshot_id"])
+        self.assertEqual(report["snapshot_sha256"],snapshot["input_sha256"])
+        self.assertEqual(len(submitter.calls),1)
+        self.assertEqual(submitter.calls[0][1:],(
+            snapshot["snapshot_id"],snapshot["input_sha256"],"mandatory_gate_optional_advisory_v1"))
+        with self.app.db() as conn:
+            count=conn.execute("SELECT COUNT(*) FROM evaluation_requests").fetchone()[0]
+        self.assertEqual(count,0)
+
+    def test_preflight_route_rejects_tampered_binding_or_report_digest(self):
+        tid,_,snapshot=self.create_snapshot()
+        path=f"/api/tenders/{tid}/evaluation-snapshots/{snapshot['snapshot_id']}/preflight"
+        for tamper in ("binding","digest"):
+            self.app.evaluation_submitter=FakePreflightSubmitter(tamper=tamper)
+            status,body,_=self.call('POST',path,{})
+            self.assertEqual(status,502,tamper)
+            self.assertEqual(body["error"]["code"],"invalid_preflight_report")
+        with self.app.db() as conn:
+            count=conn.execute("SELECT COUNT(*) FROM evaluation_requests").fetchone()[0]
+        self.assertEqual(count,0)
+
+    def test_reconcile_route_is_read_only_and_does_not_accept_resume_or_broadcast_flags(self):
+        tid,_,snapshot=self.create_snapshot()
+        self.app.evaluation_submitter=FakeEvaluationSubmitter()
+        self.app.broadcast_authorized=True
+        path=f"/api/tenders/{tid}/evaluation-snapshots/{snapshot['snapshot_id']}/submit"
+        status,body,_=self.call('POST',path,{'idempotency_key':'reconcile-read-only'})
+        self.assertEqual(status,202)
+        request_id=body['request']['request_id']
+
+        class ReadOnlyReconciler:
+            def __init__(self): self.calls=[]
+            def reconcile(self,adapter,request_id,*,resume=False):
+                self.calls.append((request_id,resume))
+                assert resume is False
+                return adapter.get_request(request_id)
+        reconciler=ReadOnlyReconciler()
+        self.app.evaluation_submitter=reconciler
+        status,body,_=self.call('POST',f'/api/evaluation-requests/{request_id}/reconcile',{})
+        self.assertEqual(status,202)
+        self.assertEqual(body['request']['request_id'],request_id)
+        self.assertEqual(reconciler.calls,[(request_id,False)])
+        status,body,_=self.call('POST',f'/api/evaluation-requests/{request_id}/reconcile',{'resume':True})
+        self.assertEqual(status,400)
+        self.assertEqual(reconciler.calls,[(request_id,False)])
 
     def test_submit_route_keeps_authentication_and_maps_request_conflicts(self):
         tid,_,first=self.create_snapshot()
