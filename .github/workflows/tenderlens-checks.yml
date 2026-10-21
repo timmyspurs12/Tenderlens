@@ -82,4 +82,16 @@ jobs:
           printf '%s\n' "$output" | .venv/bin/python -c 'import json, sys; r=json.load(sys.stdin); c={x["id"]:x for x in r["checks"]}; assert r["read_only"] and not r["ready_to_deploy"]; assert r["external_side_effects_performed"] == []; assert all(c[k]["status"] == "verified" for k in ("python.runtime", "dependencies.lock_consistency", "dependencies.sdk_installed", "dependencies.direct_mode_suite", "dependencies.pytest_installed", "project.required_files")); assert c["runtime.artifact_immutability"]["status"] == "verified"; assert c["runtime.target_compatibility"]["status"] == "unknown"; assert c["target.remote_identity"]["status"] == "unknown"; assert c["target.identity_verifier_gate_present"]["status"] == "verified"; assert c["target.identity_verifier_availability"]["status"] == "blocked"; assert c["preflight.side_effect_boundary"]["status"] == "verified"; assert c["tests.ci_coverage_configuration"]["status"] == "verified"'
 
       - name: Run GenLayer Direct Mode contract tests
-        run: .venv/bin/python -m pytest tests/genlayer_direct -v
+        shell: bash
+        run: |
+          set +e
+          .venv/bin/python -m pytest tests/genlayer_direct -v > "$RUNNER_TEMP/genlayer-direct.log" 2>&1
+          status=$?
+          cat "$RUNNER_TEMP/genlayer-direct.log"
+          if [[ "$status" -ne 0 ]]; then
+            summary=$(tail -n 40 "$RUNNER_TEMP/genlayer-direct.log" | paste -sd ' ' -)
+            summary=${summary//'%'/'%25'}
+            summary=${summary//$'\\r'/'%0D'}
+            echo "::error title=GenLayer Direct Mode diagnostics::$summary"
+          fi
+          exit "$status"
