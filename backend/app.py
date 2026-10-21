@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS amendments(id TEXT PRIMARY KEY, tender_id TEXT NOT NU
 CREATE TABLE IF NOT EXISTS requirements(id TEXT PRIMARY KEY, tender_id TEXT NOT NULL REFERENCES tenders(id), workspace TEXT NOT NULL, code TEXT NOT NULL, text TEXT NOT NULL, category TEXT NOT NULL, mandatory INTEGER NOT NULL, kind TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(tender_id, code));
 CREATE TABLE IF NOT EXISTS evidence(id TEXT PRIMARY KEY, tender_id TEXT NOT NULL REFERENCES tenders(id), workspace TEXT NOT NULL, requirement_id TEXT REFERENCES requirements(id), document_id TEXT NOT NULL REFERENCES documents(id), document_sha256 TEXT NOT NULL, start_byte INTEGER NOT NULL, end_byte INTEGER NOT NULL, excerpt TEXT NOT NULL, provenance_json TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS evaluation_snapshots(id TEXT PRIMARY KEY, tender_id TEXT NOT NULL REFERENCES tenders(id), workspace TEXT NOT NULL, input_sha256 TEXT NOT NULL, payload_json TEXT NOT NULL, created_at TEXT NOT NULL, auth_tag TEXT);
-CREATE TABLE IF NOT EXISTS evaluation_requests(request_id TEXT PRIMARY KEY, workspace TEXT NOT NULL, idempotency_key_hash TEXT NOT NULL, snapshot_id TEXT NOT NULL REFERENCES evaluation_snapshots(id), input_sha256 TEXT NOT NULL, policy_version TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('prepared','submitting','submitted','completed')), lifecycle_state TEXT NOT NULL DEFAULT 'prepared', network_name TEXT, chain_id INTEGER, last_network_status TEXT, failure_code TEXT, contract_address TEXT, deployment_tx_hash TEXT, evaluation_tx_hash TEXT, result_json TEXT, result_reference TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(workspace,idempotency_key_hash));
+CREATE TABLE IF NOT EXISTS evaluation_requests(request_id TEXT PRIMARY KEY, workspace TEXT NOT NULL, idempotency_key_hash TEXT NOT NULL, snapshot_id TEXT NOT NULL REFERENCES evaluation_snapshots(id), input_sha256 TEXT NOT NULL, policy_version TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('prepared','submitting','submitted','completed')), lifecycle_state TEXT NOT NULL DEFAULT 'prepared', network_name TEXT, chain_id INTEGER, last_network_status TEXT, failure_code TEXT, contract_address TEXT, deployment_tx_hash TEXT, evaluation_tx_hash TEXT, deployment_evm_tx_hash TEXT, evaluation_evm_tx_hash TEXT, signer_address TEXT, fee_quote_json TEXT, estimated_cost_wei TEXT, max_total_cost_wei TEXT, wallet_balance_wei TEXT, result_json TEXT, result_reference TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(workspace,idempotency_key_hash));
 CREATE INDEX IF NOT EXISTS evaluation_requests_snapshot ON evaluation_requests(workspace,snapshot_id,created_at);
 CREATE UNIQUE INDEX IF NOT EXISTS evaluation_requests_snapshot_once ON evaluation_requests(workspace,snapshot_id);
 CREATE INDEX IF NOT EXISTS documents_tender ON documents(tender_id, created_at);
@@ -102,6 +102,13 @@ class TenderLensAPI:
             "chain_id": "INTEGER",
             "last_network_status": "TEXT",
             "failure_code": "TEXT",
+            "deployment_evm_tx_hash": "TEXT",
+            "evaluation_evm_tx_hash": "TEXT",
+            "signer_address": "TEXT",
+            "fee_quote_json": "TEXT",
+            "estimated_cost_wei": "TEXT",
+            "max_total_cost_wei": "TEXT",
+            "wallet_balance_wei": "TEXT",
         }
         for name,definition in additions.items():
             if name not in columns:
@@ -188,6 +195,66 @@ class TenderLensAPI:
             else:
                 result=None
             return 200,{"request":request,"result":result}
+        reconcile_match=re.fullmatch(r"/api/evaluation-requests/([^/]+)/reconcile",p)
+        if reconcile_match:
+            if m!="POST": return err(404,"not_found","Route not found.")
+            if self.evaluation_submitter is None or not callable(getattr(self.evaluation_submitter,"reconcile",None)):
+                return err(503,"reconciliation_disabled","Evaluation reconciliation is unavailable by server configuration.")
+            body=self.body_json(e); only_keys(body,set())
+            request_id=reconcile_match.group(1)
+            from backend.evaluation_adapter import AdapterError, EvaluationAdapter
+            adapter=EvaluationAdapter(self)
+            try:
+                request=adapter.get_request(request_id)
+            except AdapterError:
+                return err(404,"not_found","Evaluation request not found.")
+            try:
+                # The route never accepts a resume/broadcast flag. The SDK driver
+                # reconciles only saved EVM/GenLayer references with resume=False.
+                self.evaluation_submitter.reconcile(adapter,request_id,resume=False)
+                request=adapter.get_request(request_id)
+            except Exception:
+                try: request=adapter.get_request(request_id)
+                except Exception: request=None
+                return 409,{"error":{"code":"reconciliation_unresolved","message":"No new transaction was sent; inspect the durable request and its saved references."},"request":request}
+            if request["status"]=="completed":
+                try: result=adapter.get_result(request_id)
+                except AdapterError: return 500,{"error":{"code":"result_verification_failed","message":"Stored evaluation result failed verification."},"request":request}
+                return 200,{"request":request,"result":result}
+            return 202,{"request":request,"result":None}
+        preflight_match=re.fullmatch(r"/api/tenders/([^/]+)/evaluation-snapshots/([^/]+)/preflight",p)
+        if preflight_match:
+            if m!="POST": return err(404,"not_found","Route not found.")
+            tid,snapshot_id=preflight_match.groups()
+            with self.db() as c:
+                if self.tender(c,tid) is None: return err(404,"not_found","Tender not found.")
+            if self.evaluation_submitter is None or not callable(getattr(self.evaluation_submitter,"preflight",None)):
+                return err(503,"preflight_disabled","GenLayer preflight is unavailable by server configuration.")
+            body=self.body_json(e); only_keys(body,set())
+            from backend.evaluation_adapter import AdapterError, EvaluationAdapter
+            adapter=EvaluationAdapter(self)
+            try:
+                verified=adapter.verified_preflight_submission(snapshot_id,tid)
+                report=self.evaluation_submitter.preflight(
+                    verified, snapshot_id=snapshot_id, snapshot_sha256=verified.snapshot_sha256,
+                    policy_version=verified.policy_version,
+                )
+            except AdapterError as exc:
+                if str(exc) in {"integrity_failure", "snapshot_changed_during_retrieval", "snapshot_changed_since_request", "snapshot_verification_failed"}:
+                    return err(500,"integrity_failure","The stored evaluation snapshot failed integrity verification.")
+                return err(404,"not_found","Evaluation snapshot not found.")
+            except Exception:
+                return err(409,"preflight_unavailable","No transaction was sent; target, runtime, balance, fee, or profile evidence did not qualify.")
+            if not isinstance(report,dict) or not isinstance(report.get("report_sha256"),str):
+                return err(502,"invalid_preflight_report","No transaction was sent; the server did not produce a verifiable cost report.")
+            expected_input_sha256=hashlib.sha256(verified.contract_input_json.encode("utf-8")).hexdigest()
+            unsigned_report={key:value for key,value in report.items() if key!="report_sha256"}
+            expected_report_sha256=hashlib.sha256(json.dumps(unsigned_report,sort_keys=True,separators=(",",":"),ensure_ascii=False).encode("utf-8")).hexdigest()
+            if (report.get("snapshot_id")!=snapshot_id or report.get("snapshot_sha256")!=verified.snapshot_sha256
+                    or report.get("contract_input_sha256")!=expected_input_sha256
+                    or report.get("report_sha256")!=expected_report_sha256):
+                return err(502,"invalid_preflight_report","No transaction was sent; the snapshot binding or preflight report digest did not verify.")
+            return 200,report
         submit_match=re.fullmatch(r"/api/tenders/([^/]+)/evaluation-snapshots/([^/]+)/submit",p)
         if submit_match:
             tid,snapshot_id=submit_match.groups()
@@ -419,8 +486,24 @@ def create_app(*, evaluation_submitter=None):
     token=os.environ.get("TENDERLENS_API_TOKEN","")
     db=os.environ.get("TENDERLENS_DB_PATH","./var/tenderlens.sqlite3"); blobs=os.environ.get("TENDERLENS_BLOB_DIR","./var/documents")
     # This server-only flag cannot be supplied or overridden by an API request.
-    # A missing submitter or any missing driver qualification gate still blocks writes.
+    # Production wiring requires the pinned driver's complete static checks; with
+    # authorization enabled, live read-only qualification/funding checks must also
+    # pass before a submission port is exposed. No factory path broadcasts.
     broadcast_authorized=os.environ.get("TENDERLENS_GENLAYER_BROADCAST_AUTHORIZED")=="1"
+    if evaluation_submitter is None:
+        try:
+            from backend.genlayer_sdk_driver import DriverConfig, GenLayerSDKDriver
+            driver=GenLayerSDKDriver(DriverConfig.from_environment())
+            if broadcast_authorized:
+                driver.prepare()
+            else:
+                driver.validate_configuration(preview_only=True)
+            evaluation_submitter=driver
+        except Exception:
+            # Fail closed. The authenticated API remains usable for records and
+            # snapshots, but submission/preflight routes report that GenLayer is
+            # unavailable until all server-side prerequisites qualify.
+            evaluation_submitter=None
     return TenderLensAPI(db,blobs,token,os.environ.get("TENDERLENS_WORKSPACE","default"),
                          evaluation_submitter=evaluation_submitter,broadcast_authorized=broadcast_authorized)
 if __name__=="__main__":

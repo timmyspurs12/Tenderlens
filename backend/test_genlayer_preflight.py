@@ -1,4 +1,5 @@
 """Offline tests for structured qualification and its strict no-side-effects boundary."""
+import hashlib
 import json
 import os
 import shutil
@@ -8,6 +9,7 @@ import tempfile
 import unittest
 import urllib.request
 from contextlib import redirect_stderr, redirect_stdout
+from datetime import datetime, timedelta, timezone
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
@@ -54,7 +56,7 @@ class GenLayerPreflightTests(unittest.TestCase):
 
     def test_report_schema_has_only_allowed_statuses_and_fails_closed(self):
         report = self.report()
-        self.assertEqual(report["schema_version"], "tenderlens.deployment-qualification.v1")
+        self.assertEqual(report["schema_version"], "tenderlens.deployment-qualification.v2")
         self.assertFalse(report["ready_to_deploy"])
         self.assertEqual(report["external_side_effects_performed"], [])
         self.assertFalse(report["secret_values_included"])
@@ -70,7 +72,45 @@ class GenLayerPreflightTests(unittest.TestCase):
         self.assertEqual(self.by_id(report, "runtime.target_compatibility")["status"], "unknown")
         self.assertEqual(self.by_id(report, "target.remote_identity")["status"], "unknown")
         self.assertEqual(self.by_id(report, "target.identity_verifier_gate_present")["status"], "verified")
-        self.assertEqual(self.by_id(report, "target.identity_verifier_availability")["status"], "blocked")
+        self.assertEqual(self.by_id(report, "target.identity_verifier_availability")["status"], "verified")
+        self.assertFalse(report["offline_evidence"]["target"]["node_rpc_identity_qualified"])
+        self.assertEqual(report["offline_evidence"]["target"]["node_rpc_identity_status"], "unknown_not_probed")
+
+    def test_offline_report_contains_verifiable_synthetic_snapshot_and_explicit_live_unknowns(self):
+        report = self.report()
+        evidence = report["offline_evidence"]
+        synthetic = evidence["synthetic_snapshot"]
+        self.assertEqual(synthetic["snapshot_id"], "00000000-0000-4000-8000-000000000001")
+        self.assertFalse(synthetic["live_snapshot_evidence"])
+        submission = json.loads(synthetic["payload_json"])
+        digest_payload = {key: value for key, value in submission.items() if key != "snapshot_sha256"}
+        canonical = json.dumps(digest_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        self.assertEqual(synthetic["integrity_sha256"], hashlib.sha256(canonical.encode("utf-8")).hexdigest())
+        self.assertEqual(submission["snapshot_sha256"], synthetic["integrity_sha256"])
+        self.assertEqual(synthetic["contract_input_sha256"], hashlib.sha256(synthetic["payload_json"].encode("utf-8")).hexdigest())
+        self.assertEqual(evidence["contract"]["deployment_status"], "not_attempted_by_offline_preflight")
+        self.assertIsNone(evidence["contract"]["deployed_contract_address"])
+        self.assertEqual(evidence["target"]["remote_chain_identity_status"], "unknown_no_rpc_request")
+        self.assertIsNone(evidence["signer_and_funding"]["signer_address"])
+        self.assertIsNone(evidence["signer_and_funding"]["balance_wei"])
+        self.assertEqual(evidence["measured_fee_profile_and_cost"]["live_fee_quote_status"], "unknown_not_queried")
+        self.assertIsNone(evidence["measured_fee_profile_and_cost"]["expected_total_cost_wei"])
+        self.assertIsNone(evidence["measured_fee_profile_and_cost"]["cost_cap_covers_expected_cost"])
+        self.assertFalse(evidence["signing_and_broadcast"]["signing_performed"])
+        self.assertFalse(evidence["signing_and_broadcast"]["broadcast_performed"])
+        self.assertFalse(evidence["authorization"]["live_submission_authorized"])
+        self.assertEqual(evidence["authorization"]["expiry_local_format_and_time_status"], "requires_user_action")
+
+    def test_offline_authorization_expiry_check_never_claims_live_authorization(self):
+        future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        future_report = self.report({"TENDERLENS_GENLAYER_AUTHORIZATION_EXPIRES_AT": future})
+        auth = future_report["offline_evidence"]["authorization"]
+        self.assertEqual(auth["expiry_local_format_and_time_status"], "verified")
+        self.assertFalse(auth["live_authorization_validated"])
+        self.assertFalse(auth["live_submission_authorized"])
+        expired = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+        expired_report = self.report({"TENDERLENS_GENLAYER_AUTHORIZATION_EXPIRES_AT": expired})
+        self.assertEqual(expired_report["offline_evidence"]["authorization"]["expiry_local_format_and_time_status"], "blocked")
 
     def test_locked_local_dependencies_and_local_syntax_are_classified_without_runtime_claims(self):
         report = self.report()
@@ -123,8 +163,56 @@ class GenLayerPreflightTests(unittest.TestCase):
         self.assertEqual(self.by_id(report, "target.remote_identity")["status"], "unknown")
         for name, (chain_id, endpoint) in SUPPORTED_NETWORKS.items():
             self.assertIsInstance(chain_id, int)
-            self.assertTrue(endpoint.startswith("https://"))
+            if name == "testnet_bradbury":
+                self.assertIsNone(endpoint)
+            else:
+                self.assertTrue(endpoint.startswith("https://"))
         self.assertIn("chain ID alone is insufficient", self.by_id(report, "target.remote_identity")["resolution"])
+        self.assertIsNone(report["offline_evidence"]["target"]["remote_chain_id_observed"])
+        self.assertEqual(report["offline_evidence"]["target"]["sdk_descriptor_chain_id"], 4221)
+
+    def test_local_fee_profile_digest_and_cap_are_reported_without_fabricating_a_live_quote(self):
+        source = (self.root / "tests/genlayer_direct/contracts/procurement_evaluation.py").read_bytes()
+        now_utc = datetime.now(timezone.utc)
+        profile = {
+            "version": 1,
+            "network": "testnet_asimov",
+            "measuredAt": (now_utc - timedelta(days=1)).isoformat(),
+            "deploy": {
+                "leaderTimeunitsAllocation": "100", "validatorTimeunitsAllocation": "200",
+                "executionBudgetPerRound": "300000", "totalMessageFees": "0", "rotationsPerRound": "1",
+            },
+            "methods": {"evaluate": {
+                "leaderTimeunitsAllocation": "150", "validatorTimeunitsAllocation": "250",
+                "executionBudgetPerRound": "400000", "totalMessageFees": "0", "rotationsPerRound": "2",
+            }},
+            "tenderlens": {
+                "sdkVersion": EXPECTED_SDK,
+                "contractSha256": hashlib.sha256(source).hexdigest(),
+                "runtime": OFFICIAL_IMMUTABLE_RUNTIME,
+                "maxSubmissionBytes": 250000,
+                "appealRounds": 1,
+                "maxEvmGas": {"deploy": "300000", "evaluate": "200000"},
+                "validUntil": (now_utc + timedelta(days=5)).isoformat(),
+            },
+        }
+        profile_path = self.root / "local-profile.json"
+        raw = json.dumps(profile, sort_keys=True).encode("utf-8")
+        profile_path.write_bytes(raw)
+        report = self.report({
+            "TENDERLENS_GENLAYER_NETWORK": "testnet_asimov",
+            "TENDERLENS_GENLAYER_FEE_PROFILE": "local-profile.json",
+            "TENDERLENS_GENLAYER_FEE_PROFILE_SHA256": hashlib.sha256(raw).hexdigest(),
+            "TENDERLENS_GENLAYER_MAX_TOTAL_COST_WEI": "987654321",
+        })
+        fees = report["offline_evidence"]["measured_fee_profile_and_cost"]
+        self.assertEqual(fees["profile_file_status"], "verified")
+        self.assertEqual(fees["profile_sha256_local"], hashlib.sha256(raw).hexdigest())
+        self.assertEqual(fees["cost_cap_wei"], "987654321")
+        self.assertIsNone(fees["expected_total_cost_wei"])
+        self.assertIsNone(fees["cost_cap_covers_expected_cost"])
+        self.assertEqual(fees["full_cost_check_status"], "unknown_no_live_fee_quote_or_balance_read")
+        self.assertFalse(fees["live_fee_values_invented"])
 
     def test_unknown_network_and_unpinned_rpc_override_fail_closed_without_echoing_url(self):
         secret = "rpc-secret-marker-do-not-print"
@@ -163,13 +251,16 @@ class GenLayerPreflightTests(unittest.TestCase):
         self.assertEqual(self.by_id(report, "contract.configuration_consistency")["status"], "blocked")
         self.assertFalse(report["ready_to_deploy"])
 
-    def test_runtime_and_funding_gate_presence_does_not_masquerade_as_verifier_availability(self):
+    def test_builtin_runtime_and_funding_implementations_do_not_masquerade_as_live_evidence(self):
         report = self.report()
         self.assertEqual(self.by_id(report, "runtime.qualification_gate_present")["status"], "verified")
-        self.assertEqual(self.by_id(report, "runtime.qualification_verifier_availability")["status"], "blocked")
+        self.assertEqual(self.by_id(report, "runtime.qualification_verifier_availability")["status"], "verified")
         self.assertEqual(self.by_id(report, "funding.verifier_gate_present")["status"], "verified")
-        self.assertEqual(self.by_id(report, "funding.verifier_availability")["status"], "blocked")
+        self.assertEqual(self.by_id(report, "funding.verifier_availability")["status"], "verified")
         self.assertEqual(self.by_id(report, "funding.confirmation")["status"], "unknown")
+        self.assertEqual(report["offline_evidence"]["signer_and_funding"]["funding_status"], "unknown_not_queried")
+        self.assertIsNone(report["offline_evidence"]["measured_fee_profile_and_cost"]["expected_total_cost_wei"])
+        self.assertFalse(report["offline_evidence"]["authorization"]["live_submission_authorized"])
 
     def test_preflight_is_local_only_and_makes_no_network_or_broadcast_calls(self):
         with patch("socket.create_connection", side_effect=AssertionError("network access attempted")), \
