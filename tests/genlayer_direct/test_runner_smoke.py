@@ -15,8 +15,10 @@ def test_runtime_storage_descriptor_probe(direct_vm):
     type_desc = generate._storage_build(contract_cls, {})
     instance = type_desc.get(direct_vm._storage.get_store_slot(storage.ROOT_SLOT_ID), 0)
     diagnostic = (
-        f"type_desc_type={type(type_desc)!r}; props={getattr(type_desc, 'props', None)!r}; "
-        f"instance_dict={getattr(instance, '__dict__', None)!r}"
+        f"type_desc_type={type(type_desc).__name__}; "
+        f"prop_names={tuple(getattr(type_desc, 'props', {}))!r}; "
+        f"instance_type={type(instance).__name__}; "
+        f"instance_has_descriptor={hasattr(instance, '__type_desc__')}"
     )
     assert hasattr(instance, "__type_desc__"), diagnostic
     assert "value" in instance.__type_desc__.props, diagnostic

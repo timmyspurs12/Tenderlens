@@ -1,11 +1,11 @@
 """Narrow compatibility shim for the pinned upstream Direct Mode runner.
 
-Testing Suite v0.30.0-rc.2 reports ``unexpected end of memory`` because its
-message injector can fail to import the current GenVM v0.6 SDK modules and
-silently leave fd 0 untouched. The runtime modules live under
-``genlayer.py``. Patch only the two injector lookups, after the runner has added
-its versioned SDK path and before each contract is imported. This does not
-change application code or claim target-network compatibility.
+The runner's message injector looks under legacy SDK paths, while the pinned
+GenVM v0.6 SDK modules live under ``genlayer.py``. Its contract allocator also
+expects a removed ``_BuilderCtx`` API; adapt that one seam to the current
+stdlib's real ``_storage_build`` API. This preserves generated descriptors and
+real contract execution; it does not change application code or claim
+target-network compatibility.
 
 Upstream tracking: https://github.com/genlayerlabs/genlayer-testing-suite/issues/113
 """

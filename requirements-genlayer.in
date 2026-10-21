@@ -3,3 +3,4 @@
 genlayer-test @ git+https://github.com/genlayerlabs/genlayer-testing-suite.git@d84591b58746a6202b56b720199ce7b9f12fd666
 genlayer-py==0.19.0rc2
 pytest==9.1.1
+cloudpickle==3.1.2
