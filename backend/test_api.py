@@ -75,8 +75,46 @@ class BackendAPITest(unittest.TestCase):
         self.assertEqual(body,{"status":"unavailable"})
 
     def test_auth_is_required_and_workspace_isolation(self):
-        status,body,_=self.call('GET','/api/tenders',token='wrong'); self.assertEqual(status,401); self.assertEqual(body['error']['code'],'unauthorized')
+        status,body,_=self.call('GET','/api/tenders',token='wrong'); self.assertEqual(status,401); self.assertEqual(body,{"error":{"code":"unauthorized","message":"Valid bearer authentication is required."}})
         tid=self.create_tender(); status,body,_=self.call('GET',f'/api/tenders/{tid}',token='u'*48,app=self.other); self.assertEqual(status,404)
+
+    def test_authorized_tender_list_returns_documented_schema_and_truthful_empty_collection(self):
+        status,body,headers=self.call('GET','/api/tenders')
+        self.assertEqual(status,200)
+        self.assertEqual(body,{"items":[]})
+        self.assertEqual(headers.get('Cache-Control'),'no-store')
+        status,created,_=self.call('POST','/api/tenders',{'title':'Published tender','reference':'REAL-REF-1'})
+        self.assertEqual(status,201)
+        status,body,_=self.call('GET','/api/tenders')
+        self.assertEqual(status,200)
+        self.assertEqual(len(body['items']),1)
+        record=body['items'][0]
+        self.assertEqual({key:record[key] for key in ('id','title','reference')},
+                         {'id':created['id'],'title':'Published tender','reference':'REAL-REF-1'})
+        self.assertIsInstance(record['id'],str)
+        self.assertIsInstance(record['title'],str)
+        self.assertIsInstance(record['reference'],str)
+
+    def test_tender_list_is_scoped_to_authenticated_workspace(self):
+        self.create_tender()
+        status,other_record,_=self.call('POST','/api/tenders',
+                                        {'title':'Other workspace tender','reference':'OTHER-REF'},
+                                        token='u'*48,app=self.other)
+        self.assertEqual(status,201)
+        status,rows,_=self.call('GET','/api/tenders')
+        self.assertEqual(status,200)
+        self.assertEqual([row['reference'] for row in rows['items']],['REF-2026-01'])
+        status,rows,_=self.call('GET','/api/tenders',token='u'*48,app=self.other)
+        self.assertEqual(status,200)
+        self.assertEqual([row['id'] for row in rows['items']],[other_record['id']])
+
+    def test_api_does_not_enable_unauthenticated_cross_origin_browser_access(self):
+        status,_,headers=self.call('GET','/api/tenders')
+        self.assertEqual(status,200)
+        self.assertNotIn('Access-Control-Allow-Origin',headers)
+        status,_,headers=self.call('OPTIONS','/api/tenders',token='unused')
+        self.assertEqual(status,204)
+        self.assertNotIn('Access-Control-Allow-Origin',headers)
     def test_rejects_invalid_file_types_and_no_fake_nontext_evidence(self):
         tid=self.create_tender(); status,body,_=self.upload(tid,b'nope',mime='application/x-executable'); self.assertEqual(status,415)
         status,pdf,_=self.upload(tid,b'%PDF unavailable parser',group='pdf',mime='application/pdf'); self.assertEqual(status,201)
