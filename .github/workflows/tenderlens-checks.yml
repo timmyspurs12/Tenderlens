@@ -15,6 +15,11 @@ jobs:
       - name: Get the code
         uses: actions/checkout@v5
 
+      - name: Install Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
       - name: Install Node.js
         uses: actions/setup-node@v5
         with:
@@ -33,5 +38,48 @@ jobs:
       - name: Build frontend
         run: npm run build
 
-      - name: Run backend tests
-        run: python -m unittest backend.test_api
+      - name: Lint frontend
+        run: npm run lint
+
+      - name: Run backend and deployment-preflight tests
+        run: python -m unittest backend.test_api backend.test_evaluation_adapter backend.test_genlayer_preflight backend.test_genlayer_sdk_driver
+
+  genlayer-direct-mode:
+    name: GenLayer Direct Mode
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+
+    steps:
+      - name: Get the code
+        uses: actions/checkout@v5
+
+      - name: Install Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install Node.js 22.14.0
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22.14.0"
+
+      - name: Install pinned uv
+        run: python -m pip install --disable-pip-version-check "uv==0.13.3"
+
+      - name: Install and verify locked GenLayer environment
+        run: bash .devcontainer/setup.sh --genlayer-only
+
+      - name: Verify pinned environment and report external deployment blockers
+        shell: bash
+        run: |
+          set +e
+          output=$( .venv/bin/python scripts/genlayer_preflight.py 2>&1 )
+          status=$?
+          set -e
+          printf '%s\n' "$output"
+          test "$status" -eq 2
+          printf '%s\n' "$output" | .venv/bin/python -c 'import json, sys; r=json.load(sys.stdin); c={x["id"]:x for x in r["checks"]}; assert r["read_only"] and not r["ready_to_deploy"]; assert r["external_side_effects_performed"] == []; assert all(c[k]["status"] == "verified" for k in ("python.runtime", "dependencies.lock_consistency", "dependencies.sdk_installed", "dependencies.direct_mode_suite", "dependencies.pytest_installed", "project.required_files")); assert c["runtime.artifact_immutability"]["status"] == "blocked"; assert c["runtime.target_compatibility"]["status"] == "unknown"; assert c["target.remote_identity"]["status"] == "unknown"; assert c["target.identity_verifier_gate_present"]["status"] == "verified"; assert c["target.identity_verifier_availability"]["status"] == "blocked"; assert c["preflight.side_effect_boundary"]["status"] == "verified"; assert c["tests.ci_coverage_configuration"]["status"] == "verified"'
+
+      - name: Run GenLayer Direct Mode contract tests
+        run: .venv/bin/python -m pytest tests/genlayer_direct -v
