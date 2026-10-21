@@ -79,7 +79,41 @@ jobs:
           set -e
           printf '%s\n' "$output"
           test "$status" -eq 2
-          printf '%s\n' "$output" | .venv/bin/python -c 'import json, sys; r=json.load(sys.stdin); c={x["id"]:x for x in r["checks"]}; assert r["read_only"] and not r["ready_to_deploy"]; assert r["external_side_effects_performed"] == []; assert all(c[k]["status"] == "verified" for k in ("python.runtime", "dependencies.lock_consistency", "dependencies.sdk_installed", "dependencies.direct_mode_suite", "dependencies.pytest_installed", "project.required_files")); assert c["runtime.artifact_immutability"]["status"] == "blocked"; assert c["runtime.target_compatibility"]["status"] == "unknown"; assert c["target.remote_identity"]["status"] == "unknown"; assert c["target.identity_verifier_gate_present"]["status"] == "verified"; assert c["target.identity_verifier_availability"]["status"] == "blocked"; assert c["preflight.side_effect_boundary"]["status"] == "verified"; assert c["tests.ci_coverage_configuration"]["status"] == "verified"'
+          printf '%s\n' "$output" | .venv/bin/python -c 'import json, sys; r=json.load(sys.stdin); c={x["id"]:x for x in r["checks"]}; assert r["read_only"] and not r["ready_to_deploy"]; assert r["external_side_effects_performed"] == []; assert all(c[k]["status"] == "verified" for k in ("python.runtime", "dependencies.lock_consistency", "dependencies.sdk_installed", "dependencies.direct_mode_suite", "dependencies.pytest_installed", "project.required_files")); assert c["runtime.artifact_immutability"]["status"] == "verified"; assert c["runtime.target_compatibility"]["status"] == "unknown"; assert c["target.remote_identity"]["status"] == "unknown"; assert c["target.identity_verifier_gate_present"]["status"] == "verified"; assert c["target.identity_verifier_availability"]["status"] == "blocked"; assert c["preflight.side_effect_boundary"]["status"] == "verified"; assert c["tests.ci_coverage_configuration"]["status"] == "verified"'
 
       - name: Run GenLayer Direct Mode contract tests
-        run: .venv/bin/python -m pytest tests/genlayer_direct -v
+        shell: bash
+        run: |
+          set +e
+          .venv/bin/python -m pytest tests/genlayer_direct/test_runner_smoke.py -v > "$RUNNER_TEMP/genlayer-smoke.log" 2>&1
+          smoke_status=$?
+          .venv/bin/python -m pytest tests/genlayer_direct -v > "$RUNNER_TEMP/genlayer-direct.log" 2>&1
+          status=$?
+          cat "$RUNNER_TEMP/genlayer-direct.log"
+          if [[ "$smoke_status" -ne 0 ]]; then
+            smoke_summary=$(tail -n 20 "$RUNNER_TEMP/genlayer-smoke.log" | paste -sd ' ' -)
+            smoke_summary=${smoke_summary//'%'/'%25'}
+            echo "::error title=GenLayer isolated smoke diagnostics::$smoke_summary"
+          fi
+          if [[ "$status" -ne 0 ]]; then
+            runner_info=$(.venv/bin/python - <<'PY'
+          import tarfile
+          from gltest.direct.sdk_loader import RUNNER_TYPE, download_artifacts, resolve_version
+          version = resolve_version()
+          bundle = download_artifacts(version)
+          prefix = f"runners/{RUNNER_TYPE}/"
+          with tarfile.open(bundle, "r:xz") as archive:
+              runners = sorted(m.name for m in archive.getmembers() if m.name.startswith(prefix) and m.name.endswith(".tar"))
+          latest = runners[-1].split("/")[-2] + runners[-1].split("/")[-1].removesuffix(".tar")
+          documented = "1zr6nqk597d97kg0dyxg0shhrykx5v02zjgnyrajapy4wlqvfvwh"
+          present = f"{prefix}{documented[:2]}/{documented[2:]}.tar" in runners
+          print(f"release={version}; documented_reference_present={present}; bundle_default_runner={latest}")
+          PY
+          )
+            runner_info=${runner_info//'%'/'%25'}
+            echo "::notice title=Direct Mode runner bundle inventory::$runner_info"
+            summary=$(tail -n 8 "$RUNNER_TEMP/genlayer-direct.log" | paste -sd ' ' -)
+            summary=${summary//'%'/'%25'}
+            echo "::error title=GenLayer Direct Mode diagnostics::$summary"
+          fi
+          exit "$status"

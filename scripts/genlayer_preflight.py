@@ -21,6 +21,11 @@ EXPECTED_SDK = "0.18.0"
 EXPECTED_TEST_SUITE = "0.29.2"
 EXPECTED_PYTEST = "9.1.1"
 EXPECTED_TEST_SUITE_COMMIT = "343e3a358f9e235a93b49c60721ce7676585ff07"
+# This content-addressed runner is present in the official GenVM v0.3.0-rc7
+# runner bundle and is selected by the pinned Direct Mode suite's `latest` resolver.
+# Pinning it makes the tested artifact immutable; this does not prove target support.
+OFFICIAL_IMMUTABLE_RUNTIME = "1zr6nqk597d97kg0dyxg0shhrykx5v02zjgnyrajapy4wlqvfvwh"
+OFFICIAL_RUNTIME_SOURCE_URL = "https://github.com/genlayerlabs/genvm/releases/tag/v0.3.0-rc7"
 SUPPORTED_NETWORKS = {
     "studionet": (61999, "https://studio.genlayer.com/api"),
     "testnet_bradbury": (4221, "https://rpc-bradbury.genlayer.com"),
@@ -105,7 +110,9 @@ def _driver_runtime_path_consistent(driver_source: str) -> bool:
 
 
 def _runtime_dependency(contract_text: str) -> str | None:
-    match = re.search(r'^#\s*\{\s*"Depends"\s*:\s*"py-genlayer:([^"]+)"\s*\}', contract_text, re.MULTILINE)
+    # Official GenLayer contract docs require the Depends directive on line one.
+    first_line = contract_text.splitlines()[0] if contract_text.splitlines() else ""
+    match = re.fullmatch(r'#\s*\{\s*"Depends"\s*:\s*"py-genlayer:([^"]+)"\s*\}', first_line)
     return match.group(1).strip() if match else None
 
 
@@ -210,17 +217,24 @@ def collect_report(root: Path, env: dict[str, str], *, versions: dict[str, str |
     dependency = _runtime_dependency(contract_text)
     if dependency is None:
         runtime_status = "blocked"
-        runtime_detail = "The contract runtime dependency directive is absent or malformed."
-    elif dependency.lower() in {"latest", "stable", "main", "master"}:
+        runtime_detail = "The contract runtime dependency directive is absent, malformed, or not on line one."
+        runtime_resolution = "Restore the first-line Depends directive from the reviewed contract source; do not guess a runtime reference."
+    elif dependency.lower() in {"latest", "stable", "main", "master", ""}:
         runtime_status = "blocked"
         runtime_detail = f"The configured py-genlayer reference is the mutable alias `{dependency}`; no immutable artifact is pinned."
+        runtime_resolution = "Use an immutable runtime identifier documented by GenLayer, then independently establish target availability and compatibility. Do not guess an artifact ID."
+    elif dependency == OFFICIAL_IMMUTABLE_RUNTIME:
+        runtime_status = "verified"
+        runtime_detail = "The contract reference matches the content-addressed GenVM runtime used in official GenLayer contract documentation. This verifies the pinned reference only, not its availability or compatibility with a selected network."
+        runtime_resolution = "Keep the documented immutable identifier; independently prove its availability and compatibility on the selected target before deployment."
     else:
         runtime_status = "unknown"
-        runtime_detail = "A non-alias runtime string is present, but the repository has no authoritative evidence that this syntax pins immutable content or names a supported target artifact."
+        runtime_detail = "A non-alias runtime string is present, but it does not match the official immutable reference recorded by this repository; no compatibility or immutability is inferred."
+        runtime_resolution = "Compare the reference against current official GenLayer docs and verify availability/compatibility for the selected target; do not infer it from tag shape."
     checks.append(_check(
         "runtime.artifact_immutability", runtime_status, runtime_detail,
-        f"Local contract directive: {('py-genlayer:' + dependency) if dependency is not None else 'not found'}. No registry was contacted and no image was pulled.",
-        "Maintainer must obtain authoritative version-specific GenLayer documentation identifying the accepted immutable artifact syntax and exact target-supported artifact; do not guess a tag or digest.",
+        f"Local contract directive: {('py-genlayer:' + dependency) if dependency is not None else 'not found'}. Official source: {OFFICIAL_RUNTIME_SOURCE_URL}. No registry was contacted and no image was pulled.",
+        runtime_resolution,
         requires_user_action=True, resolution_scope="external_read_only",
     ))
     checks.append(_check(

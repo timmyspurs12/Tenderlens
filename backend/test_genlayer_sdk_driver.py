@@ -205,13 +205,17 @@ class GenLayerSDKDriverTests(unittest.TestCase):
 
     def test_mutable_repository_runner_is_rejected_before_sdk_initialization(self):
         sdk = FakeSDK()
-        driver = GenLayerSDKDriver(
-            DriverConfig(network="testnet_asimov", private_key=KEY, broadcast_authorized=True),
-            runtime_qualifier=lambda *_: True,
-            network_identity_verifier=lambda *_: True,
-            funding_verifier=lambda *_: True, sdk=sdk)
-        with self.assertRaisesRegex(DriverError, "mutable_contract_runtime_reference"):
-            driver.prepare()
+        with tempfile.TemporaryDirectory(dir=ROOT) as temp_dir:
+            contract_path = Path(temp_dir) / "mutable.py"
+            contract_path.write_text('# { "Depends": "py-genlayer:latest" }\n', encoding="utf-8")
+            driver = GenLayerSDKDriver(
+                DriverConfig(network="testnet_asimov", private_key=KEY, broadcast_authorized=True,
+                             contract_path=contract_path),
+                runtime_qualifier=lambda *_: True,
+                network_identity_verifier=lambda *_: True,
+                funding_verifier=lambda *_: True, sdk=sdk)
+            with self.assertRaisesRegex(DriverError, "mutable_contract_runtime_reference"):
+                driver.prepare()
         self.assertEqual(sdk.create_calls, 0)
 
     def test_false_or_non_boolean_runtime_qualification_never_reaches_sdk(self):

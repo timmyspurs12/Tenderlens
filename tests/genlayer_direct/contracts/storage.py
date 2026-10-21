@@ -1,6 +1,5 @@
+# { "Depends": "py-genlayer:1zr6nqk597d97kg0dyxg0shhrykx5v02zjgnyrajapy4wlqvfvwh" }
 # GenLayer Direct Mode runner smoke fixture; this is not a procurement evaluation contract.
-# v0.1.0
-# { "Depends": "py-genlayer:latest" }
 
 import genlayer as gl
 

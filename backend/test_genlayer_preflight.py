@@ -17,6 +17,7 @@ from scripts.genlayer_preflight import (
     EXPECTED_SDK,
     EXPECTED_TEST_SUITE,
     EXPECTED_TEST_SUITE_COMMIT,
+    OFFICIAL_IMMUTABLE_RUNTIME,
     REQUIRED_PROJECT_FILES,
     SUPPORTED_NETWORKS,
     VALID_STATUSES,
@@ -65,7 +66,7 @@ class GenLayerPreflightTests(unittest.TestCase):
             for required in ("summary", "evidence", "resolution", "owner", "requires_user_action",
                              "check_scope", "resolution_scope", "external_side_effect_required"):
                 self.assertIn(required, check)
-        self.assertEqual(self.by_id(report, "runtime.artifact_immutability")["status"], "blocked")
+        self.assertEqual(self.by_id(report, "runtime.artifact_immutability")["status"], "verified")
         self.assertEqual(self.by_id(report, "runtime.target_compatibility")["status"], "unknown")
         self.assertEqual(self.by_id(report, "target.remote_identity")["status"], "unknown")
         self.assertEqual(self.by_id(report, "target.identity_verifier_gate_present")["status"], "verified")
@@ -80,15 +81,30 @@ class GenLayerPreflightTests(unittest.TestCase):
         self.assertEqual(self.by_id(report, "runtime.target_compatibility")["status"], "unknown")
         self.assertIn("not contract compilation", self.by_id(report, "contract.configuration_consistency")["evidence"])
 
-    def test_current_mutable_alias_is_blocked_and_other_tags_or_digest_shapes_are_not_verified(self):
+    def test_official_runtime_directive_must_be_on_the_first_line(self):
         contract = self.root / "tests/genlayer_direct/contracts/procurement_evaluation.py"
         original = contract.read_text(encoding="utf-8")
-        self.assertEqual(self.by_id(self.report(), "runtime.artifact_immutability")["status"], "blocked")
-        for reference in ("0.2.9", "sha256-" + "ab" * 32):
+        contract.write_text("# unrelated version comment\n" + original, encoding="utf-8")
+        report = self.report()
+        self.assertEqual(self.by_id(report, "runtime.artifact_immutability")["status"], "blocked")
+        self.assertFalse(report["ready_to_deploy"])
+        contract.write_text(original, encoding="utf-8")
+
+    def test_official_immutable_reference_is_recognized_but_others_and_aliases_are_not(self):
+        contract = self.root / "tests/genlayer_direct/contracts/procurement_evaluation.py"
+        original = contract.read_text(encoding="utf-8")
+        official_directive = "py-genlayer:" + OFFICIAL_IMMUTABLE_RUNTIME
+        self.assertIn(official_directive, original)
+        report = self.report()
+        self.assertEqual(self.by_id(report, "runtime.artifact_immutability")["status"], "verified")
+        self.assertEqual(self.by_id(report, "runtime.target_compatibility")["status"], "unknown")
+        self.assertFalse(report["ready_to_deploy"])
+        for reference, expected in (("latest", "blocked"), ("0.2.9", "unknown"),
+                                    ("sha256-" + "ab" * 32, "unknown")):
             with self.subTest(reference=reference):
-                contract.write_text(original.replace("py-genlayer:latest", "py-genlayer:" + reference), encoding="utf-8")
+                contract.write_text(original.replace(official_directive, "py-genlayer:" + reference), encoding="utf-8")
                 report = self.report()
-                self.assertEqual(self.by_id(report, "runtime.artifact_immutability")["status"], "unknown")
+                self.assertEqual(self.by_id(report, "runtime.artifact_immutability")["status"], expected)
                 self.assertEqual(self.by_id(report, "runtime.target_compatibility")["status"], "unknown")
                 self.assertFalse(report["ready_to_deploy"])
         contract.write_text(original, encoding="utf-8")

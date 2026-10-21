@@ -1,5 +1,4 @@
-# v0.1.0
-# { "Depends": "py-genlayer:latest" }
+# { "Depends": "py-genlayer:1zr6nqk597d97kg0dyxg0shhrykx5v02zjgnyrajapy4wlqvfvwh" }
 
 import json
 import re
