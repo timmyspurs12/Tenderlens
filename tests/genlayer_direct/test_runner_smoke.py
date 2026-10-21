@@ -6,28 +6,20 @@ CONTRACT = Path(__file__).parent / "contracts" / "storage.py"
 
 
 def test_runtime_storage_descriptor_probe(direct_vm):
-    import inspect
     import importlib
-    import pkgutil
     from gltest.direct.loader import load_contract_class
 
     contract_cls = load_contract_class(CONTRACT, direct_vm)
+    storage = importlib.import_module("genlayer.py.storage")
     generate = importlib.import_module("genlayer.py.storage._internal.generate")
-    package = importlib.import_module("genlayer.py.storage._internal")
-    modules = sorted(module.name for module in pkgutil.iter_modules(package.__path__))
-    api = {}
-    for name, value in vars(generate).items():
-        if callable(value) and any(part in name.lower() for part in ("build", "type", "desc", "record")):
-            try:
-                api[name] = str(inspect.signature(value))
-            except (TypeError, ValueError):
-                api[name] = type(value).__name__
+    type_desc = generate._storage_build(contract_cls, {})
+    instance = type_desc.get(direct_vm._storage.get_store_slot(storage.ROOT_SLOT_ID), 0)
     diagnostic = (
-        f"generate_file={generate.__file__!r}; modules={modules!r}; "
-        f"generate_api={api!r}; names={sorted(vars(generate))!r}; "
-        f"contract_class={contract_cls!r}; class_desc={getattr(contract_cls, '__type_desc__', None)!r}"
+        f"type_desc_type={type(type_desc)!r}; props={getattr(type_desc, 'props', None)!r}; "
+        f"instance_dict={getattr(instance, '__dict__', None)!r}"
     )
-    assert hasattr(generate, "_BuilderCtx") and hasattr(generate, "_storage_build"), diagnostic
+    assert hasattr(instance, "__type_desc__"), diagnostic
+    assert "value" in instance.__type_desc__.props, diagnostic
 
 
 def test_direct_mode_deploy_read_and_write(direct_deploy):

@@ -13,7 +13,6 @@ from __future__ import annotations
 
 from importlib import import_module
 from importlib.metadata import version
-import sys
 
 import gltest.direct.loader as direct_loader
 import gltest.direct.vm as direct_vm
@@ -23,26 +22,32 @@ if version("genlayer-test") != "0.30.0rc2" or version("genlayer-py") != "0.19.0r
     raise RuntimeError("Direct Mode compatibility shim requires the exact locked GenLayer toolchain")
 
 
-def _install_legacy_storage_imports():
-    """Expose the current SDK storage package at the path gltest 0.30 imports."""
+def _allocate_contract_current_runtime(contract_cls, vm, *args, **kwargs):
+    """Allocate through the storage builder API shipped with this runtime."""
     storage = import_module("genlayer.py.storage")
-    internal = import_module("genlayer.py.storage._internal")
     generate = import_module("genlayer.py.storage._internal.generate")
 
-    # The pinned Direct Mode loader imports these legacy names in
-    # _allocate_contract. This SDK release moved the implementation beneath
-    # genlayer.py; without aliases, its ImportError fallback constructs the
-    # contract directly and bypasses the generated storage type descriptor.
-    sys.modules.setdefault("genlayer.storage", storage)
-    sys.modules.setdefault("genlayer.storage._internal", internal)
-    sys.modules.setdefault("genlayer.storage._internal.generate", generate)
-    genlayer = import_module("genlayer")
-    if not hasattr(genlayer, "storage"):
-        genlayer.storage = storage
+    # gltest 0.30.0rc2 expects the removed _BuilderCtx API. In the pinned
+    # py-genlayer stdlib, _storage_build takes (contract_cls, generics_map).
+    # Use its actual TypeDesc and instance factory so generated field setters
+    # receive the descriptor the runtime expects; never synthesize metadata.
+    type_desc = generate._storage_build(contract_cls, {})
+    slot = vm._storage.get_store_slot(storage.ROOT_SLOT_ID)
+    instance = type_desc.get(slot, 0)
+
+    generated_class = getattr(type_desc, "cls", None)
+    init_owner = generated_class if generated_class is not None else contract_cls
+    init = getattr(init_owner, "__init__", None)
+    if init is not None:
+        init = getattr(init, generate.ORIGINAL_INIT_ATTR, init)
+        init(instance, *args, **kwargs)
+    return instance
+
+
+direct_loader._allocate_contract = _allocate_contract_current_runtime
 
 
 def _runtime_calldata():
-    _install_legacy_storage_imports()
     return import_module("genlayer.py.calldata")
 
 
