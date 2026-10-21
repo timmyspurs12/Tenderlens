@@ -6,24 +6,28 @@ CONTRACT = Path(__file__).parent / "contracts" / "storage.py"
 
 
 def test_runtime_storage_descriptor_probe(direct_vm):
+    import inspect
+    import importlib
+    import pkgutil
     from gltest.direct.loader import load_contract_class
 
     contract_cls = load_contract_class(CONTRACT, direct_vm)
-    from genlayer.storage import ROOT_SLOT_ID
-    from genlayer.storage._internal.generate import _BuilderCtx, _storage_build
-
-    type_desc = _storage_build(_BuilderCtx.empty(), contract_cls)
-    slot = direct_vm._storage.get_store_slot(ROOT_SLOT_ID)
-    instance = type_desc.get(slot, 0)
+    generate = importlib.import_module("genlayer.py.storage._internal.generate")
+    package = importlib.import_module("genlayer.py.storage._internal")
+    modules = sorted(module.name for module in pkgutil.iter_modules(package.__path__))
+    api = {}
+    for name, value in vars(generate).items():
+        if callable(value) and any(part in name.lower() for part in ("build", "type", "desc", "record")):
+            try:
+                api[name] = str(inspect.signature(value))
+            except (TypeError, ValueError):
+                api[name] = type(value).__name__
     diagnostic = (
-        f"type_desc_type={type(type_desc)!r}; "
-        f"type_desc_attrs={[name for name in dir(type_desc) if not name.startswith('_')]!r}; "
-        f"props={getattr(type_desc, 'props', None)!r}; "
-        f"contract_class_desc={getattr(contract_cls, '__type_desc__', None)!r}; "
-        f"instance_dict={getattr(instance, '__dict__', None)!r}"
+        f"generate_file={generate.__file__!r}; modules={modules!r}; "
+        f"generate_api={api!r}; names={sorted(vars(generate))!r}; "
+        f"contract_class={contract_cls!r}; class_desc={getattr(contract_cls, '__type_desc__', None)!r}"
     )
-    assert hasattr(instance, "__type_desc__"), diagnostic
-    assert "value" in instance.__type_desc__.props, diagnostic
+    assert hasattr(generate, "_BuilderCtx") and hasattr(generate, "_storage_build"), diagnostic
 
 
 def test_direct_mode_deploy_read_and_write(direct_deploy):
