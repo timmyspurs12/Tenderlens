@@ -325,7 +325,10 @@ Input data (JSON):
             except Exception:
                 raise ValueError("Intelligent interpretation did not return valid JSON")
         else:
-            raise ValueError("Intelligent interpretation did not return a JSON object or string")
+            raise ValueError(
+                "Intelligent interpretation did not return a JSON object or string; got "
+                + type(raw).__module__ + "." + type(raw).__qualname__
+            )
         if not isinstance(decision, dict) or set(decision.keys()) != {"status", "reason", "evidence_ids"}:
             raise ValueError("Intelligent interpretation returned an invalid decision schema")
         status = decision["status"]
