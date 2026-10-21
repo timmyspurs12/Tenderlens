@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, asArray, createTender, isRecord, loadTenders, request, statusForApiError } from './api';
+import { ApiError, asArray, checkGatewaySession, createTender, isRecord, loadTenders, request, signIn, statusForApiError } from './api';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -75,6 +75,21 @@ describe('workspace API client', () => {
     expect(statusForApiError(new ApiError('AUTH_REQUIRED', 'sign in'))).toBe('unauthorized');
     expect(statusForApiError(new ApiError('INVALID_RESPONSE', 'bad data'))).toBe('invalid');
     expect(statusForApiError(new ApiError('API_NOT_CONFIGURED', 'configure'))).toBe('not_configured');
+  });
+
+  it('checks the gateway session and signs in without exposing a bearer token', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ authenticated: true }))
+      .mockResolvedValueOnce(jsonResponse({ authenticated: true }));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(checkGatewaySession('https://records.example')).resolves.toBeUndefined();
+    await expect(signIn('owner passphrase', 'https://records.example')).resolves.toBeUndefined();
+    expect(fetchMock.mock.calls[0][0]).toBe('https://records.example/api/auth/session');
+    expect(fetchMock.mock.calls[1][0]).toBe('https://records.example/api/auth/login');
+    for (const [, options] of fetchMock.mock.calls) {
+      expect(options.credentials).toBe('include');
+      expect(new Headers(options.headers).has('Authorization')).toBe(false);
+    }
   });
 
   it('creates a tender through the same cookie-authenticated gateway', async () => {
