@@ -124,6 +124,14 @@ class TenderLensAPI:
         c.execute("CREATE TRIGGER evaluation_snapshots_no_update BEFORE UPDATE ON evaluation_snapshots BEGIN SELECT RAISE(ABORT, 'evaluation snapshots are immutable'); END")
     def __call__(self,environ,start_response):
         method=environ.get("REQUEST_METHOD","GET"); path=unquote(environ.get("PATH_INFO","")); trace=uid()
+        # Public, minimal readiness endpoint for container/platform health checks.
+        # It reveals no paths, credentials, or database details and verifies DB access.
+        if method=="GET" and path=="/healthz":
+            try:
+                with self.db() as c: c.execute("SELECT 1").fetchone()
+            except Exception:
+                return self.respond(start_response,503,{"status":"unavailable"},trace)
+            return self.respond(start_response,200,{"status":"ok"},trace)
         if method=="OPTIONS": return self.respond(start_response,204,{})
         auth=environ.get("HTTP_AUTHORIZATION","")
         if not auth.startswith("Bearer ") or not hmac.compare_digest(auth[7:],self.token):

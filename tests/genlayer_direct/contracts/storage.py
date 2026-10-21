@@ -1,10 +1,10 @@
-# { "Depends": "py-genlayer:1zr6nqk597d97kg0dyxg0shhrykx5v02zjgnyrajapy4wlqvfvwh" }
+# { "Depends": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6" }
 # GenLayer Direct Mode runner smoke fixture; this is not a procurement evaluation contract.
 
-import genlayer as gl
+from genlayer import *
 
 
-class Storage(gl.contract.Contract):
+class Storage(gl.Contract):
     value: str
 
     def __init__(self, initial_value: str):

@@ -59,6 +59,16 @@ class BackendAPITest(unittest.TestCase):
         status,rows,_=self.call('GET',f'/api/tenders/{tid}/documents'); self.assertEqual(status,200); self.assertEqual([r['version'] for r in rows['items']],[1,2])
     def test_rejects_weak_service_secret_at_startup(self):
         with self.assertRaises(ValueError): TenderLensAPI(Path(self.tmp.name)/'weak.sqlite',Path(self.tmp.name)/'weak-blobs','short')
+    def test_healthz_is_public_and_confirms_database_readiness_without_leaking_details(self):
+        status,body,headers=self.call('GET','/healthz',token='wrong')
+        self.assertEqual(status,200)
+        self.assertEqual(body,{"status":"ok"})
+        self.assertIn('X-Request-ID',headers)
+        with patch.object(self.app,'db',side_effect=OSError('private database path')):
+            status,body,_=self.call('GET','/healthz',token='wrong')
+        self.assertEqual(status,503)
+        self.assertEqual(body,{"status":"unavailable"})
+
     def test_auth_is_required_and_workspace_isolation(self):
         status,body,_=self.call('GET','/api/tenders',token='wrong'); self.assertEqual(status,401); self.assertEqual(body['error']['code'],'unauthorized')
         tid=self.create_tender(); status,body,_=self.call('GET',f'/api/tenders/{tid}',token='u'*48,app=self.other); self.assertEqual(status,404)

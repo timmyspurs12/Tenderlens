@@ -17,15 +17,14 @@ import sys
 from pathlib import Path
 from typing import Any
 
-EXPECTED_SDK = "0.18.0"
-EXPECTED_TEST_SUITE = "0.29.2"
+EXPECTED_SDK = "0.19.0rc2"
+EXPECTED_TEST_SUITE = "0.30.0rc2"
 EXPECTED_PYTEST = "9.1.1"
-EXPECTED_TEST_SUITE_COMMIT = "343e3a358f9e235a93b49c60721ce7676585ff07"
-# This content-addressed runner is present in the official GenVM v0.3.0-rc7
-# runner bundle and is selected by the pinned Direct Mode suite's `latest` resolver.
-# Pinning it makes the tested artifact immutable; this does not prove target support.
-OFFICIAL_IMMUTABLE_RUNTIME = "1zr6nqk597d97kg0dyxg0shhrykx5v02zjgnyrajapy4wlqvfvwh"
-OFFICIAL_RUNTIME_SOURCE_URL = "https://github.com/genlayerlabs/genvm/releases/tag/v0.3.0-rc7"
+EXPECTED_TEST_SUITE_COMMIT = "d84591b58746a6202b56b720199ce7b9f12fd666"
+# Current official contract docs use this content-addressed runtime identifier.
+# It proves the reference is documented, not that it is supported by a chosen target.
+OFFICIAL_IMMUTABLE_RUNTIME = "1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6"
+OFFICIAL_RUNTIME_SOURCE_URL = "https://github.com/genlayerlabs/genlayer-docs/blob/7c3ad7c4bc738a7c55d05df780dd76c2cb052db6/pages/developers/intelligent-contracts/first-contract.mdx"
 SUPPORTED_NETWORKS = {
     "studionet": (61999, "https://studio.genlayer.com/api"),
     "testnet_bradbury": (4221, "https://rpc-bradbury.genlayer.com"),
@@ -168,10 +167,10 @@ def collect_report(root: Path, env: dict[str, str], *, versions: dict[str, str |
     build_lock_text = build_lock.decode("utf-8", "replace") if build_lock is not None else ""
     setup_text = setup_script.decode("utf-8", "replace") if setup_script is not None else ""
     pin_consistent = bool(
-        re.search(r"(?m)^genlayer-py==0\.18\.0\s*$", requirements_text)
+        re.search(r"(?m)^genlayer-py==0\.19\.0rc2\s*$", requirements_text)
         and re.search(r"(?m)^pytest==9\.1\.1\s*$", requirements_text)
         and EXPECTED_TEST_SUITE_COMMIT in requirements_text
-        and re.search(r"(?m)^genlayer-py==0\.18\.0\s*\\$", lock_text)
+        and re.search(r"(?m)^genlayer-py==0\.19\.0rc2\s*\\$", lock_text)
         and re.search(r"(?m)^pytest==9\.1\.1\s*\\$", lock_text)
         and EXPECTED_TEST_SUITE_COMMIT in lock_text
         and re.search(r"(?m)^setuptools==84\.2\.0\s*$", build_requirements_text)
@@ -225,8 +224,8 @@ def collect_report(root: Path, env: dict[str, str], *, versions: dict[str, str |
         runtime_resolution = "Use an immutable runtime identifier documented by GenLayer, then independently establish target availability and compatibility. Do not guess an artifact ID."
     elif dependency == OFFICIAL_IMMUTABLE_RUNTIME:
         runtime_status = "verified"
-        runtime_detail = "The contract reference matches the content-addressed GenVM runtime used in official GenLayer contract documentation. This verifies the pinned reference only, not its availability or compatibility with a selected network."
-        runtime_resolution = "Keep the documented immutable identifier; independently prove its availability and compatibility on the selected target before deployment."
+        runtime_detail = "The contract reference matches the exact content-addressed runtime identifier published in current official contract documentation. This verifies the documented immutable reference only, not runtime availability or compatibility with a selected network."
+        runtime_resolution = "Keep the documented immutable reference pinned; independently verify the selected target's supported runner and exact contract compatibility before deployment."
     else:
         runtime_status = "unknown"
         runtime_detail = "A non-alias runtime string is present, but it does not match the official immutable reference recorded by this repository; no compatibility or immutability is inferred."

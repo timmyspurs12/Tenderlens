@@ -1,4 +1,4 @@
-"""Pinned GenLayer SDK v0.18.0 transaction driver.
+"""Pinned GenLayer SDK v0.19.0-rc.2 transaction driver.
 
 This is a real SDK adapter, not a mock. It is fail-closed by default: callers must
 explicitly authorize broadcast and provide target-runtime qualification and a
@@ -22,7 +22,7 @@ from typing import Any, Callable
 
 from backend.evaluation_adapter import SubmissionLifecycle, is_adapter_verified_submission
 
-SDK_VERSION = "0.18.0"
+SDK_VERSION = "0.19.0rc2"
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONTRACT = REPOSITORY_ROOT / "tests/genlayer_direct/contracts/procurement_evaluation.py"
 NETWORK_NAMES = {"studionet", "testnet_asimov", "testnet_bradbury"}
@@ -81,9 +81,10 @@ class GenLayerSDKDriver:
     both read-only and broadcast contexts. ``runtime_qualifier`` must confirm the
     exact dependency reference on the target GenVM/WASM environment. For broadcast,
     ``funding_verifier`` must assess target-specific expected deployment and execution
-    costs; genlayer-py 0.18.0 has no high-level GenLayer fee estimator that can establish
-    this itself. All three are injected gates, not built-in evidence. No network call
-    is made by construction or ordinary tests.
+    costs. The SDK exposes fee-estimation helpers, but each target and contract needs
+    a current, measured quote and an explicit funding policy; this driver does not infer
+    budgets or treat an SDK estimate as approval. All three are injected gates, not
+    built-in evidence. No network call is made by construction or ordinary tests.
     """
 
     def __init__(self, config: DriverConfig, *, runtime_qualifier: Callable[[str, str], bool] | None = None,
@@ -122,7 +123,6 @@ class GenLayerSDKDriver:
             "create_client": root.create_client,
             "create_account": root.create_account,
             "chains": chains,
-            "TransactionStatus": types.TransactionStatus,
             "ExecutionResult": types.ExecutionResult,
         })()
         return self._sdk
@@ -240,13 +240,14 @@ class GenLayerSDKDriver:
         if not isinstance(receipt, dict):
             lifecycle.outcome_unknown("FINALIZED_RECEIPT_UNVERIFIED")
             raise DriverError("finalized_receipt_unverified")
-        status = cls._enum_text(receipt.get("status_name"))
+        tx_lifecycle = receipt.get("lifecycle")
+        state = tx_lifecycle.get("state") if isinstance(tx_lifecycle, dict) else None
         execution = cls._enum_text(receipt.get("tx_execution_result_name"))
-        if status != "FINALIZED":
+        if state != "finalized":
             lifecycle.outcome_unknown("FINALIZED_RECEIPT_STATUS_MISMATCH")
             raise DriverError("finalized_receipt_status_mismatch")
         if execution == "FINISHED_WITH_ERROR":
-            lifecycle.failed("contract_execution_failed", status)
+            lifecycle.failed("contract_execution_failed", "finalized")
             raise DriverError("contract_execution_failed")
         if execution != "FINISHED_WITH_RETURN":
             lifecycle.outcome_unknown("FINALIZED_RECEIPT_EXECUTION_UNVERIFIED")
@@ -284,27 +285,30 @@ class GenLayerSDKDriver:
                 self._sleep(self.config.poll_interval_seconds)
                 continue
             self._verify_transaction_reference(tx, tx_hash, lifecycle)
-            status = self._enum_text(tx.get("status_name"))
+            tx_lifecycle = tx.get("lifecycle")
+            state = tx_lifecycle.get("state") if isinstance(tx_lifecycle, dict) else None
+            outcome = tx_lifecycle.get("outcome") if isinstance(tx_lifecycle, dict) else None
             execution = self._enum_text(tx.get("tx_execution_result_name"))
-            if status == "FINALIZED":
+            if state == "finalized":
                 if execution == "FINISHED_WITH_RETURN":
                     return tx
                 if execution == "FINISHED_WITH_ERROR":
-                    lifecycle.failed("contract_execution_failed", status)
+                    lifecycle.failed("contract_execution_failed", state)
                     raise DriverError("contract_execution_failed")
-                lifecycle.outcome_unknown(status)
+                lifecycle.outcome_unknown(state)
                 raise DriverError("finalized_execution_result_unrecognized")
             terminal_failures = {
-                "CANCELED": "transaction_canceled",
-                "UNDETERMINED": "transaction_undetermined",
-                "VALIDATORS_TIMEOUT": "validators_timeout",
-                "LEADER_TIMEOUT": "leader_timeout",
+                "canceled": "transaction_canceled",
+                "undetermined": "transaction_undetermined",
+                "validators_timeout": "validators_timeout",
+                "leader_timeout": "leader_timeout",
             }
-            if status in terminal_failures:
-                code = terminal_failures[status]
-                lifecycle.failed(code, status)
+            terminal_value = state if state in terminal_failures else outcome
+            if terminal_value in terminal_failures:
+                code = terminal_failures[terminal_value]
+                lifecycle.failed(code, terminal_value)
                 raise DriverError(code)
-            lifecycle.pending(status or "UNRECOGNIZED")
+            lifecycle.pending(state or "UNRECOGNIZED")
             self._sleep(self.config.poll_interval_seconds)
         lifecycle.outcome_unknown()
         raise DriverError("transaction_poll_timeout")
@@ -367,7 +371,7 @@ class GenLayerSDKDriver:
         try:
             deployed = runtime.client.wait_for_transaction_receipt(
                 transaction_hash=deployment_hash,
-                status=runtime.sdk.TransactionStatus.FINALIZED,
+                wait_until="finalized",
                 interval=0, retries=1,
             )
         except Exception:
@@ -439,7 +443,7 @@ class GenLayerSDKDriver:
             deployed = self._poll(runtime, deployment_hash, lifecycle)
             try:
                 receipt = runtime.client.wait_for_transaction_receipt(
-                    transaction_hash=deployment_hash, status=runtime.sdk.TransactionStatus.FINALIZED,
+                    transaction_hash=deployment_hash, wait_until="finalized",
                     interval=0, retries=1,
                 )
             except Exception:
