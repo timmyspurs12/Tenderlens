@@ -85,13 +85,19 @@ jobs:
         shell: bash
         run: |
           set +e
+          .venv/bin/python -m pytest tests/genlayer_direct/test_runner_smoke.py -v > "$RUNNER_TEMP/genlayer-smoke.log" 2>&1
+          smoke_status=$?
           .venv/bin/python -m pytest tests/genlayer_direct -v > "$RUNNER_TEMP/genlayer-direct.log" 2>&1
           status=$?
           cat "$RUNNER_TEMP/genlayer-direct.log"
+          if [[ "$smoke_status" -ne 0 ]]; then
+            smoke_summary=$(tail -n 20 "$RUNNER_TEMP/genlayer-smoke.log" | paste -sd ' ' -)
+            smoke_summary=${smoke_summary//'%'/'%25'}
+            echo "::error title=GenLayer isolated smoke diagnostics::$smoke_summary"
+          fi
           if [[ "$status" -ne 0 ]]; then
-            summary=$(tail -n 40 "$RUNNER_TEMP/genlayer-direct.log" | paste -sd ' ' -)
+            summary=$(tail -n 8 "$RUNNER_TEMP/genlayer-direct.log" | paste -sd ' ' -)
             summary=${summary//'%'/'%25'}
-            summary=${summary//$'\\r'/'%0D'}
             echo "::error title=GenLayer Direct Mode diagnostics::$summary"
           fi
           exit "$status"
