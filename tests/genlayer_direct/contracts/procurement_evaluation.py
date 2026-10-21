@@ -36,7 +36,7 @@ def _is_sha256(value: str) -> bool:
     )
 
 
-class ProcurementEvaluation(gl.contract.Contract):
+class ProcurementEvaluation(gl.Contract):
     submission_json: str
     result_json: str
     lifecycle_status: str

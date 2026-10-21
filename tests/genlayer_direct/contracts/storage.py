@@ -4,7 +4,7 @@
 import genlayer as gl
 
 
-class Storage(gl.contract.Contract):
+class Storage(gl.Contract):
     value: str
 
     def __init__(self, initial_value: str):
