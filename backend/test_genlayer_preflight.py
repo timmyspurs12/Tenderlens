@@ -111,7 +111,7 @@ class GenLayerPreflightTests(unittest.TestCase):
 
     def test_inconsistent_runtime_and_build_lock_roots_are_blocked(self):
         lock = self.root / "requirements-genlayer.lock.txt"
-        lock.write_text(lock.read_text(encoding="utf-8").replace("genlayer-py==0.18.0", "genlayer-py==0.17.0"), encoding="utf-8")
+        lock.write_text(lock.read_text(encoding="utf-8").replace("genlayer-py==0.19.0rc2", "genlayer-py==0.18.0"), encoding="utf-8")
         report = self.report()
         self.assertEqual(self.by_id(report, "dependencies.lock_consistency")["status"], "blocked")
         self.assertFalse(report["ready_to_deploy"])

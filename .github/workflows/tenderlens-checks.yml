@@ -97,21 +97,15 @@ jobs:
           fi
           if [[ "$status" -ne 0 ]]; then
             runner_info=$(.venv/bin/python - <<'PY'
-          import tarfile
-          from gltest.direct.sdk_loader import RUNNER_TYPE, download_artifacts, resolve_version
+          from pathlib import Path
+          from gltest.direct.sdk_loader import resolve_version, setup_sdk_paths
           version = resolve_version()
-          bundle = download_artifacts(version)
-          prefix = f"runners/{RUNNER_TYPE}/"
-          with tarfile.open(bundle, "r:xz") as archive:
-              runners = sorted(m.name for m in archive.getmembers() if m.name.startswith(prefix) and m.name.endswith(".tar"))
-          latest = runners[-1].split("/")[-2] + runners[-1].split("/")[-1].removesuffix(".tar")
-          documented = "1zr6nqk597d97kg0dyxg0shhrykx5v02zjgnyrajapy4wlqvfvwh"
-          present = f"{prefix}{documented[:2]}/{documented[2:]}.tar" in runners
-          print(f"release={version}; documented_reference_present={present}; bundle_default_runner={latest}")
+          paths = setup_sdk_paths(Path("tests/genlayer_direct/contracts/storage.py"), version=version)
+          print(f"genvm_bundle={version}; exact_dependency=1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6; resolved_runner_path={paths[0]}")
           PY
           )
             runner_info=${runner_info//'%'/'%25'}
-            echo "::notice title=Direct Mode runner bundle inventory::$runner_info"
+            echo "::notice title=Direct Mode runner resolution::$runner_info"
             summary=$(tail -n 8 "$RUNNER_TEMP/genlayer-direct.log" | paste -sd ' ' -)
             summary=${summary//'%'/'%25'}
             echo "::error title=GenLayer Direct Mode diagnostics::$summary"

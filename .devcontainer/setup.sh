@@ -24,14 +24,14 @@ python - <<'PY'
 from importlib.metadata import distribution, version
 import json, sys
 assert sys.version_info[:2] == (3, 12), f"Expected Python 3.12, got {sys.version}"
-expected = {"genlayer-test": "0.29.2", "genlayer-py": "0.18.0", "pytest": "9.1.1"}
+expected = {"genlayer-test": "0.30.0rc2", "genlayer-py": "0.19.0rc2", "pytest": "9.1.1"}
 for package, wanted in expected.items():
     actual = version(package)
     print(f"{package}=={actual}")
     assert actual == wanted, f"Expected {package}=={wanted}, got {actual}"
 source = json.loads(distribution("genlayer-test").read_text("direct_url.json") or "{}")
 commit = source.get("vcs_info", {}).get("commit_id")
-assert commit == "343e3a358f9e235a93b49c60721ce7676585ff07", f"Unexpected GenLayer Testing Suite source: {commit}"
+assert commit == "d84591b58746a6202b56b720199ce7b9f12fd666", f"Unexpected GenLayer Testing Suite source: {commit}"
 print(f"GenLayer Testing Suite source commit: {commit}")
 PY
 uv --version

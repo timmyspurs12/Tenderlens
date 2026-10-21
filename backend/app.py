@@ -124,6 +124,14 @@ class TenderLensAPI:
         c.execute("CREATE TRIGGER evaluation_snapshots_no_update BEFORE UPDATE ON evaluation_snapshots BEGIN SELECT RAISE(ABORT, 'evaluation snapshots are immutable'); END")
     def __call__(self,environ,start_response):
         method=environ.get("REQUEST_METHOD","GET"); path=unquote(environ.get("PATH_INFO","")); trace=uid()
+        # Public, minimal readiness endpoint for container/platform health checks.
+        # It reveals no paths, credentials, or database details and verifies DB access.
+        if method=="GET" and path=="/healthz":
+            try:
+                with self.db() as c: c.execute("SELECT 1").fetchone()
+            except Exception:
+                return self.respond(start_response,503,{"status":"unavailable"},trace)
+            return self.respond(start_response,200,{"status":"ok"},trace)
         if method=="OPTIONS": return self.respond(start_response,204,{})
         auth=environ.get("HTTP_AUTHORIZATION","")
         if not auth.startswith("Bearer ") or not hmac.compare_digest(auth[7:],self.token):
@@ -400,6 +408,13 @@ class TenderLensAPI:
         c.execute("INSERT INTO evidence VALUES(?,?,?,?,?,?,?,?,?,?,?)",(record["id"],tid,self.workspace,req,doc,d["sha256"],start,end,excerpt,json.dumps(provenance),record["created_at"]))
         return 201,record
 
+def server_bind_config(environ=None):
+    """Return a PaaS-compatible bind address and prefer its assigned PORT."""
+    values=os.environ if environ is None else environ
+    host=values.get("TENDERLENS_HOST","0.0.0.0")
+    port=int(values.get("PORT") or values.get("TENDERLENS_PORT","8000"))
+    return host,port
+
 def create_app(*, evaluation_submitter=None):
     token=os.environ.get("TENDERLENS_API_TOKEN","")
     db=os.environ.get("TENDERLENS_DB_PATH","./var/tenderlens.sqlite3"); blobs=os.environ.get("TENDERLENS_BLOB_DIR","./var/documents")
@@ -409,5 +424,5 @@ def create_app(*, evaluation_submitter=None):
     return TenderLensAPI(db,blobs,token,os.environ.get("TENDERLENS_WORKSPACE","default"),
                          evaluation_submitter=evaluation_submitter,broadcast_authorized=broadcast_authorized)
 if __name__=="__main__":
-    app=create_app(); host=os.environ.get("TENDERLENS_HOST","127.0.0.1"); port=int(os.environ.get("TENDERLENS_PORT","8000"))
+    app=create_app(); host,port=server_bind_config()
     with make_server(host,port,app) as server: print(f"TenderLens API listening on {host}:{port}"); server.serve_forever()

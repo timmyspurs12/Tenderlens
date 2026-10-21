@@ -29,7 +29,7 @@ class FakeClient:
         self.execution = execution
         self.pending = pending
         self.receipt_hash = None
-        self.receipt_status = "FINALIZED"
+        self.receipt_status = "finalized"
         self.receipt_execution = "FINISHED_WITH_RETURN"
         self.calls = []
 
@@ -40,12 +40,15 @@ class FakeClient:
     def get_transaction(self, *, transaction_hash):
         self.calls.append(("poll", transaction_hash))
         if self.pending:
-            return {"tx_id": transaction_hash, "status_name": "PENDING", "tx_execution_result_name": "NOT_VOTED"}
-        return {"tx_id": transaction_hash, "status_name": "FINALIZED", "tx_execution_result_name": self.execution}
+            return {"tx_id": transaction_hash, "lifecycle": {"state": "processing"},
+                    "tx_execution_result_name": "NOT_VOTED"}
+        return {"tx_id": transaction_hash, "lifecycle": {"state": "finalized"},
+                "tx_execution_result_name": self.execution}
 
-    def wait_for_transaction_receipt(self, *, transaction_hash, status, interval, retries):
-        self.calls.append(("receipt", transaction_hash, status, interval, retries))
-        return {"tx_id": self.receipt_hash or transaction_hash, "status_name": self.receipt_status,
+    def wait_for_transaction_receipt(self, *, transaction_hash, wait_until, interval, retries):
+        self.calls.append(("receipt", transaction_hash, wait_until, interval, retries))
+        return {"tx_id": self.receipt_hash or transaction_hash,
+                "lifecycle": {"state": self.receipt_status},
                 "tx_execution_result_name": self.receipt_execution,
                 "tx_data_decoded": {"contract_address": CONTRACT}}
 
@@ -59,9 +62,8 @@ class FakeClient:
 
 
 class FakeSDK:
-    version = "0.18.0"
+    version = "0.19.0rc2"
     chains = SimpleNamespace(testnet_asimov=FakeChain())
-    TransactionStatus = SimpleNamespace(FINALIZED="FINALIZED")
     ExecutionResult = SimpleNamespace(FINISHED_WITH_RETURN="FINISHED_WITH_RETURN",
                                       FINISHED_WITH_ERROR="FINISHED_WITH_ERROR")
 
@@ -280,11 +282,11 @@ class GenLayerSDKDriverTests(unittest.TestCase):
 
     def test_mismatched_or_missing_transaction_reference_fails_closed(self):
         for transaction, expected in (
-            ({"hash": "0x" + "f" * 64, "status_name": "FINALIZED",
+            ({"hash": "0x" + "f" * 64, "lifecycle": {"state": "finalized"},
               "tx_execution_result_name": "FINISHED_WITH_RETURN"}, "transaction_reference_mismatch"),
-            ({"status_name": "FINALIZED", "tx_execution_result_name": "FINISHED_WITH_RETURN"},
+            ({"lifecycle": {"state": "finalized"}, "tx_execution_result_name": "FINISHED_WITH_RETURN"},
              "transaction_reference_mismatch"),
-            ({"tx_id": "not-a-hash", "status_name": "FINALIZED",
+            ({"tx_id": "not-a-hash", "lifecycle": {"state": "finalized"},
               "tx_execution_result_name": "FINISHED_WITH_RETURN"}, "transaction_reference_invalid"),
         ):
             class MismatchedClient(FakeClient):
@@ -317,12 +319,12 @@ class GenLayerSDKDriverTests(unittest.TestCase):
 
     def test_finalized_receipt_must_report_successful_execution(self):
         for status, execution, expected in (
-            ("PENDING", "FINISHED_WITH_RETURN", "finalized_receipt_status_mismatch"),
-            ("FINALIZED", "NOT_VOTED", "finalized_receipt_execution_unverified"),
-            ("FINALIZED", "FINISHED_WITH_ERROR", "contract_execution_failed"),
+            ("pending", "FINISHED_WITH_RETURN", "finalized_receipt_status_mismatch"),
+            ("finalized", "NOT_VOTED", "finalized_receipt_execution_unverified"),
+            ("finalized", "FINISHED_WITH_ERROR", "contract_execution_failed"),
         ):
             sdk = FakeSDK()
-            sdk.client.receipt_status = status
+            sdk.client.receipt_status = status.lower()
             sdk.client.receipt_execution = execution
             driver = configured_driver(sdk)
             runtime = driver.prepare()
@@ -338,13 +340,13 @@ class GenLayerSDKDriverTests(unittest.TestCase):
             self.assertFalse(any(call[0] == "write" for call in sdk.client.calls))
 
     def test_finalized_transaction_timeout_and_undetermined_states_are_not_success(self):
-        for status, code in (("CANCELED", "transaction_canceled"),
-                             ("UNDETERMINED", "transaction_undetermined"),
-                             ("VALIDATORS_TIMEOUT", "validators_timeout"),
-                             ("LEADER_TIMEOUT", "leader_timeout")):
+        for status, code in (("canceled", "transaction_canceled"),
+                             ("undetermined", "transaction_undetermined"),
+                             ("validators_timeout", "validators_timeout"),
+                             ("leader_timeout", "leader_timeout")):
             class TerminalClient(FakeClient):
                 def get_transaction(self, *, transaction_hash):
-                    return {"tx_id": transaction_hash, "status_name": status,
+                    return {"tx_id": transaction_hash, "lifecycle": {"state": "decided", "outcome": status},
                             "tx_execution_result_name": "NOT_VOTED"}
             driver = configured_driver(FakeSDK(TerminalClient()))
             runtime = driver.prepare()
@@ -405,7 +407,7 @@ class GenLayerSDKDriverTests(unittest.TestCase):
         lifecycle = Lifecycle()
         with self.assertRaisesRegex(DriverError, "contract_execution_failed"):
             driver._poll(runtime, TX_DEPLOY, lifecycle)
-        self.assertIn(("failed", "contract_execution_failed", "FINALIZED"), lifecycle.events)
+        self.assertIn(("failed", "contract_execution_failed", "finalized"), lifecycle.events)
 
 
 if __name__ == "__main__":

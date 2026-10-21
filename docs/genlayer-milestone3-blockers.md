@@ -4,9 +4,9 @@
 
 ## Verified runtime
 
-The local Agent Mode host remains CPython 3.11.2 and does not have the GenLayer packages installed. Runtime verification is delegated to GitHub Actions on the writable feature branch. The workflow provisions Python 3.12, Node 22.14.0, and `uv==0.13.3`, installs the lockfiles, checks `genlayer-test==0.29.2`, `genlayer-py==0.18.0`, `pytest==9.1.1`, source commit `343e3a358f9e235a93b49c60721ce7676585ff07`, and `gltest --help`, then runs the Direct Mode suite.
+The local Agent Mode host remains CPython 3.11.2 and does not have the GenLayer packages installed. Runtime verification is delegated to GitHub Actions on the writable feature branch. The workflow provisions Python 3.12, Node 22.14.0, and `uv==0.13.3`, installs the lockfiles, checks `genlayer-test==0.30.0rc2`, `genlayer-py==0.19.0rc2`, `pytest==9.1.1`, source commit `d84591b58746a6202b56b720199ce7b9f12fd666`, and `gltest --help`, then runs the Direct Mode suite.
 
-**Compatibility pin:** the pinned upstream source commit declares suite version 0.29.2 and permits `genlayer-py>=0.18.0,<0.20.0`. The PyPI wheel `genlayer-test==0.29.2` instead requires `genlayer-py>=0.13.0,<0.17.0`; do not replace the source pin with that incompatible wheel or override its metadata. `requirements-genlayer.in` and its hashed locks preserve the tested source/SDK pair.
+**Current toolchain pin:** official Testing Suite v0.30.0-rc.2 source commit `d84591b58746a6202b56b720199ce7b9f12fd666` permits `genlayer-py>=0.19.0rc2,<0.20.0`. The repository pins that release source and SDK 0.19.0-rc.2, which add support for current GenVM manager runner bundles. This is a prerelease test environment; it does not prove target compatibility.
 
 ## Contract and boundary
 

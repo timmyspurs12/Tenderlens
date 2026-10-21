@@ -5,12 +5,12 @@ import unittest
 
 from genlayer_py import create_account, create_client
 from genlayer_py.client.genlayer_client import GenLayerClient
-from genlayer_py.types import ExecutionResult, TransactionStatus
+from genlayer_py.types import ExecutionResult
 
 
 class PinnedGenLayerSDKSurfaceTests(unittest.TestCase):
     def test_locked_sdk_version_and_submission_read_polling_surface(self):
-        self.assertEqual(importlib.metadata.version("genlayer-py"), "0.18.0")
+        self.assertEqual(importlib.metadata.version("genlayer-py"), "0.19.0rc2")
         self.assertEqual({"chain", "endpoint", "account"} & set(inspect.signature(create_client).parameters),
                          {"chain", "endpoint", "account"})
         self.assertIn("account_private_key", inspect.signature(create_account).parameters)
@@ -24,8 +24,8 @@ class PinnedGenLayerSDKSurfaceTests(unittest.TestCase):
         read = inspect.signature(GenLayerClient.read_contract).parameters
         self.assertTrue({"address", "function_name", "account", "args"}.issubset(read))
         poll = inspect.signature(GenLayerClient.wait_for_transaction_receipt).parameters
-        self.assertTrue({"transaction_hash", "status", "interval", "retries", "full_transaction"}.issubset(poll))
-        self.assertEqual(TransactionStatus.FINALIZED.value, "FINALIZED")
+        self.assertTrue({"transaction_hash", "wait_until", "interval", "retries", "full_transaction"}.issubset(poll))
+        self.assertEqual(poll["wait_until"].default, "decided")
         self.assertEqual(ExecutionResult.FINISHED_WITH_RETURN.value, "FINISHED_WITH_RETURN")
         self.assertEqual(ExecutionResult.FINISHED_WITH_ERROR.value, "FINISHED_WITH_ERROR")
 
