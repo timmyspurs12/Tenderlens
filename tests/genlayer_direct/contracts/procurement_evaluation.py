@@ -2,7 +2,7 @@
 
 import json
 import re
-import genlayer as gl
+from genlayer import *
 
 
 SCHEMA_VERSION = "tenderlens.evaluation-submission.v1"
