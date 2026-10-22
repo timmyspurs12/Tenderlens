@@ -42,6 +42,21 @@ SDK_DEFAULT_ENDPOINTS = {
 MAX_FEE_PROFILE_AGE = timedelta(days=7)
 BRADBURY_GENESIS_HASH = "0x17d89764d4f4f963158fc4c5e8f2cb670c2837740b35f37081c12860c3df97e4"
 BRADBURY_ADDRESS_MANAGER = "0x3f71ae080bd6270a91dbcc7960d88797828538e0"
+# Current official Bradbury protocol manifest at commit
+# 8e570073bd04b1450045dd2433e70383e5971655 (2026-10-19). These mappings are
+# checked against the live AddressManager, not the older SDK's static addresses.
+BRADBURY_PROTOCOL_REGISTRY = {
+    "ConsensusMain": "0x2e2766cbc3e5e61ce93bbcdcbb3eacb82082a019",
+    "ConsensusData": "0xc5fa6f82bee53598825d6edf7e3e24613082c75b",
+    "Staking": "0xd8fba96c0dbb0257028dbc0107060b958e5c7113",
+}
+BRADBURY_ADDRESS_MANAGER_ABI = [{
+    "type": "function",
+    "name": "getAddress",
+    "stateMutability": "view",
+    "inputs": [{"name": "key", "type": "string"}],
+    "outputs": [{"name": "", "type": "address"}],
+}]
 NETWORK_CONSENSUS_ADDRESSES = {
     "studionet": {
         "main": "0xb7278a61aa25c888815afc32ad3cc52ff24fe575",
@@ -50,10 +65,6 @@ NETWORK_CONSENSUS_ADDRESSES = {
     "studio_devnet": {
         "main": "0xb7278a61aa25c888815afc32ad3cc52ff24fe575",
         "data": "0x88b0f18613db92bf970ffe264e02496e20a74d16",
-    },
-    "testnet_bradbury": {
-        "main": "0x0112bf6e83497965a5fdd6dad1e447a6e004271d",
-        "data": "0x85d7bf947a512fc640c75327a780c90847267697",
     },
 }
 STUDIO_CHAIN_IDS = {61997, 61999}
@@ -370,8 +381,11 @@ class GenLayerSDKDriver:
         if (parsed.scheme != "https" or not hostname or parsed.username or parsed.password
                 or parsed.query or parsed.fragment or hostname in {"localhost", "127.0.0.1", "::1"}):
             raise DriverError("invalid_rpc_endpoint")
-        if hostname in {"rpc.testnet-chain.genlayer.com", "rpc-bradbury.genlayer.com"}:
-            raise DriverError("underlying_or_unqualified_bradbury_rpc")
+        # This is the underlying GenLayer Chain RPC, not a GenLayer node. The
+        # official SDK preset host is allowed through to live identity/capability
+        # checks; its presence in configuration does not qualify it.
+        if hostname == "rpc.testnet-chain.genlayer.com":
+            raise DriverError("underlying_bradbury_chain_rpc_not_genlayer_node")
         return endpoint
 
     @staticmethod
@@ -381,6 +395,71 @@ class GenLayerSDKDriver:
             return bool(code.removeprefix("0x"))
         return isinstance(code, (bytes, bytearray)) and bool(code)
 
+    @staticmethod
+    def _valid_nonzero_address(value: Any) -> bool:
+        return (isinstance(value, str) and ADDRESS.fullmatch(value) is not None
+                and value.lower() != "0x" + "0" * 40)
+
+    @classmethod
+    def _verify_bradbury_identity(cls, client: Any, chain: Any) -> bool:
+        """Verify current Bradbury identity through its live AddressManager.
+
+        The pinned SDK descriptor still carries older static ConsensusMain and
+        ConsensusData addresses. Resolve the current registry entries and update
+        the in-memory SDK chain objects only after every identity check succeeds.
+        """
+        genesis = client.w3.eth.get_block(0)
+        observed_genesis = cls._normalize_hex_ref(genesis.get("hash"), client.w3)
+        if observed_genesis != BRADBURY_GENESIS_HASH:
+            return False
+
+        manager_address = client.w3.to_checksum_address(BRADBURY_ADDRESS_MANAGER)
+        if not cls._contract_code_present(client, manager_address):
+            return False
+        manager = client.w3.eth.contract(
+            address=manager_address, abi=BRADBURY_ADDRESS_MANAGER_ABI,
+        )
+        resolved: dict[str, str] = {}
+        for key, expected in BRADBURY_PROTOCOL_REGISTRY.items():
+            address = manager.functions.getAddress(key).call()
+            if not cls._valid_nonzero_address(address) or str(address).lower() != expected:
+                return False
+            checksum_address = client.w3.to_checksum_address(address)
+            if not cls._contract_code_present(client, checksum_address):
+                return False
+            resolved[key] = checksum_address
+
+        main = getattr(chain, "consensus_main_contract", None)
+        data = getattr(chain, "consensus_data_contract", None)
+        if (not isinstance(main, dict) or not main.get("abi")
+                or not isinstance(data, dict) or not data.get("abi")):
+            return False
+        main_contract = client.w3.eth.contract(address=resolved["ConsensusMain"], abi=main["abi"])
+        data_contract = client.w3.eth.contract(address=resolved["ConsensusData"], abi=data["abi"])
+        main_manager = main_contract.functions.getAddressManager().call()
+        data_manager = data_contract.functions.addressManager().call()
+        if (not cls._valid_nonzero_address(str(main_manager))
+                or str(main_manager).lower() != BRADBURY_ADDRESS_MANAGER
+                or not cls._valid_nonzero_address(str(data_manager))
+                or str(data_manager).lower() != BRADBURY_ADDRESS_MANAGER):
+            return False
+
+        # genlayer-py deep-copies its chain descriptor in create_client(); update
+        # both copies so subsequent SDK actions use the registry-resolved addresses.
+        descriptor_contracts = []
+        for descriptor in (chain, getattr(client, "chain", None)):
+            if descriptor is None:
+                continue
+            current_main = getattr(descriptor, "consensus_main_contract", None)
+            current_data = getattr(descriptor, "consensus_data_contract", None)
+            if not isinstance(current_main, dict) or not isinstance(current_data, dict):
+                return False
+            descriptor_contracts.append((current_main, current_data))
+        for current_main, current_data in descriptor_contracts:
+            current_main["address"] = resolved["ConsensusMain"]
+            current_data["address"] = resolved["ConsensusData"]
+        return True
+
     @classmethod
     def _verify_builtin_network_identity(cls, client: Any, chain: Any, network: str, endpoint: str) -> bool:
         expected_chain_id = EXPECTED_CHAIN_IDS.get(network)
@@ -388,6 +467,8 @@ class GenLayerSDKDriver:
             return False
         if int(client.w3.eth.chain_id) != expected_chain_id:
             return False
+        if network == "testnet_bradbury":
+            return cls._verify_bradbury_identity(client, chain)
         expected_contracts = NETWORK_CONSENSUS_ADDRESSES.get(network)
         if expected_contracts is None:
             return False
@@ -403,18 +484,7 @@ class GenLayerSDKDriver:
                 return False
         if network in STUDIO_ENDPOINTS:
             return endpoint == STUDIO_ENDPOINTS[network]
-        if network != "testnet_bradbury":
-            return False
-        genesis = client.w3.eth.get_block(0)
-        observed_genesis = cls._normalize_hex_ref(genesis.get("hash"), client.w3)
-        if observed_genesis != BRADBURY_GENESIS_HASH:
-            return False
-        data_contract = client.w3.eth.contract(address=data["address"], abi=data["abi"])
-        manager = data_contract.functions.addressManager().call()
-        observed_manager = str(manager).lower()
-        if observed_manager != BRADBURY_ADDRESS_MANAGER:
-            return False
-        return cls._contract_code_present(client, observed_manager)
+        return False
 
     def _connect(self, *, broadcast_ready: bool, contract_source: str | None = None) -> Runtime:
         sdk = self._load_sdk()

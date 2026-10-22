@@ -1012,6 +1012,12 @@ class GenLayerSDKDriverTests(unittest.TestCase):
                 driver.prepare()
             self.assertEqual(sdk.create_calls, 0)
 
+    def test_official_bradbury_sdk_endpoint_is_only_a_candidate_until_live_checks(self):
+        endpoint = "https://rpc-bradbury.genlayer.com"
+        self.assertEqual(GenLayerSDKDriver._validated_bradbury_node_endpoint(endpoint), endpoint)
+        with self.assertRaisesRegex(DriverError, "underlying_bradbury_chain_rpc_not_genlayer_node"):
+            GenLayerSDKDriver._validated_bradbury_node_endpoint("https://rpc.testnet-chain.genlayer.com")
+
     def test_missing_network_or_rpc_and_unpinned_endpoints_fail_before_sdk(self):
         scenarios = (
             (DriverConfig(network="", private_key="", contract_path=FIXTURE), "unsupported_network"),
@@ -1020,7 +1026,7 @@ class GenLayerSDKDriverTests(unittest.TestCase):
             (DriverConfig(network="testnet_bradbury", private_key="", rpc_url="http://node.example", contract_path=FIXTURE), "invalid_rpc_endpoint"),
             (DriverConfig(network="testnet_bradbury", private_key="", rpc_url="https://user:secret@node.example/api", contract_path=FIXTURE), "invalid_rpc_endpoint"),
             (DriverConfig(network="testnet_bradbury", private_key="", rpc_url="https://node.example/api?token=secret", contract_path=FIXTURE), "invalid_rpc_endpoint"),
-            (DriverConfig(network="testnet_bradbury", private_key="", rpc_url="https://rpc.testnet-chain.genlayer.com", contract_path=FIXTURE), "underlying_or_unqualified_bradbury_rpc"),
+            (DriverConfig(network="testnet_bradbury", private_key="", rpc_url="https://rpc.testnet-chain.genlayer.com", contract_path=FIXTURE), "underlying_bradbury_chain_rpc_not_genlayer_node"),
             (DriverConfig(network="studionet", private_key="", rpc_url="https://wrong.example", contract_path=FIXTURE), "rpc_endpoint_not_pinned"),
         )
         for config, expected in scenarios:
@@ -1039,43 +1045,111 @@ class GenLayerSDKDriverTests(unittest.TestCase):
             driver.prepare()
         self.assertEqual(sdk.create_calls, 0)
 
+        current_manager = "0x3f71ae080bd6270a91dbcc7960d88797828538e0"
+        current_main = "0x2e2766cbc3e5e61ce93bbcdcbb3eacb82082a019"
+        current_data = "0xc5fa6f82bee53598825d6edf7e3e24613082c75b"
+        current_staking = "0xd8fba96c0dbb0257028dbc0107060b958e5c7113"
+        current_genesis = "0x17d89764d4f4f963158fc4c5e8f2cb670c2837740b35f37081c12860c3df97e4"
+
+        class Call:
+            def __init__(self, value):
+                self.value = value
+
+            def call(self):
+                return self.value
+
         class IdentityClient:
-            def __init__(self, chain_id, genesis_hash=None, manager=None, wrong_code=False):
+            def __init__(self, *, genesis_hash=current_genesis, manager=current_manager,
+                         registry=None, linked_manager=current_manager, wrong_code=False):
+                self.chain = SimpleNamespace(
+                    consensus_main_contract={"address": "0x0112bf6e83497965a5fdd6dad1e447a6e004271d", "abi": ["main"]},
+                    consensus_data_contract={"address": "0x85d7bf947a512fc640c75327a780c90847267697", "abi": ["data"]},
+                )
+                addresses = registry or {
+                    "ConsensusMain": current_main,
+                    "ConsensusData": current_data,
+                    "Staking": current_staking,
+                }
+                self.registry = addresses
                 self.w3 = SimpleNamespace()
                 self.w3.to_hex = lambda value: "0x" + bytes(value).hex()
-                self.w3.eth = SimpleNamespace(
-                    chain_id=chain_id,
-                    get_code=lambda _address: b"" if wrong_code else b"contract-code",
-                    get_block=lambda _number: {"hash": bytes.fromhex(genesis_hash[2:])},
-                    contract=lambda **_kwargs: SimpleNamespace(
-                        functions=SimpleNamespace(addressManager=lambda: SimpleNamespace(call=lambda: manager))
-                    ),
-                )
+                self.w3.to_checksum_address = lambda value: str(value)
 
+                class Eth:
+                    chain_id = 4221
+
+                    def get_code(_self, _address):
+                        return b"" if wrong_code else b"contract-code"
+
+                    def get_block(_self, number):
+                        assert number == 0
+                        return {"hash": bytes.fromhex(genesis_hash[2:])}
+
+                    def contract(_self, *, address, abi):
+                        normalized = address.lower()
+                        if normalized == current_manager:
+                            return SimpleNamespace(functions=SimpleNamespace(
+                                getAddress=lambda key: Call(self_owner.registry.get(key, "0x" + "0" * 40))))
+                        if normalized == current_main:
+                            return SimpleNamespace(functions=SimpleNamespace(
+                                getAddressManager=lambda: Call(linked_manager)))
+                        if normalized == current_data:
+                            return SimpleNamespace(functions=SimpleNamespace(
+                                addressManager=lambda: Call(linked_manager)))
+                        raise AssertionError(f"unexpected contract address: {address}")
+
+                self_owner = self
+                self.w3.eth = Eth()
+
+        original_sdk_main = "0x0112bf6e83497965a5fdd6dad1e447a6e004271d"
+        original_sdk_data = "0x85d7bf947a512fc640c75327a780c90847267697"
         expected_bradbury = SimpleNamespace(
             id=4221,
-            consensus_main_contract={"address": "0x0112bf6e83497965a5fdd6dad1e447a6e004271d", "abi": ["main"]},
-            consensus_data_contract={"address": "0x85d7bf947a512fc640c75327a780c90847267697", "abi": ["data"]},
+            consensus_main_contract={"address": original_sdk_main, "abi": ["main"]},
+            consensus_data_contract={"address": original_sdk_data, "abi": ["data"]},
         )
-        identity_client = IdentityClient(4221, "0x17d89764d4f4f963158fc4c5e8f2cb670c2837740b35f37081c12860c3df97e4",
-                                         "0x3f71ae080bd6270a91dbcc7960d88797828538e0")
+        identity_client = IdentityClient()
+        identity_client.chain = SimpleNamespace(
+            consensus_main_contract={"address": original_sdk_main, "abi": ["main"]},
+            consensus_data_contract={"address": original_sdk_data, "abi": ["data"]},
+        )
         self.assertTrue(GenLayerSDKDriver._verify_builtin_network_identity(
             identity_client, expected_bradbury, "testnet_bradbury", "https://node.example/api"))
-        wrong_address_chain = SimpleNamespace(
-            id=4221,
-            consensus_main_contract={"address": "0x" + "c" * 40, "abi": ["main"]},
-            consensus_data_contract=expected_bradbury.consensus_data_contract,
-        )
+        self.assertEqual(expected_bradbury.consensus_main_contract["address"].lower(), current_main)
+        self.assertEqual(expected_bradbury.consensus_data_contract["address"].lower(), current_data)
+        self.assertEqual(identity_client.chain.consensus_main_contract["address"].lower(), current_main)
+        self.assertEqual(identity_client.chain.consensus_data_contract["address"].lower(), current_data)
+
+        wrong_registry = dict(identity_client.registry)
+        wrong_registry["ConsensusMain"] = original_sdk_main
+        wrong_chain_identity = IdentityClient(registry=wrong_registry)
         self.assertFalse(GenLayerSDKDriver._verify_builtin_network_identity(
-            identity_client, wrong_address_chain, "testnet_bradbury", "https://node.example/api"))
-        wrong_manager = IdentityClient(4221, "0x17d89764d4f4f963158fc4c5e8f2cb670c2837740b35f37081c12860c3df97e4",
-                                       "0x" + "c" * 40)
+            wrong_chain_identity, SimpleNamespace(
+                id=4221,
+                consensus_main_contract={"address": original_sdk_main, "abi": ["main"]},
+                consensus_data_contract={"address": original_sdk_data, "abi": ["data"]},
+            ), "testnet_bradbury", "https://node.example/api"))
+        wrong_manager_link = IdentityClient(linked_manager="0x" + "c" * 40)
         self.assertFalse(GenLayerSDKDriver._verify_builtin_network_identity(
-            wrong_manager, expected_bradbury, "testnet_bradbury", "https://node.example/api"))
-        wrong_code = IdentityClient(4221, "0x17d89764d4f4f963158fc4c5e8f2cb670c2837740b35f37081c12860c3df97e4",
-                                    "0x3f71ae080bd6270a91dbcc7960d88797828538e0", wrong_code=True)
+            wrong_manager_link, SimpleNamespace(
+                id=4221,
+                consensus_main_contract={"address": original_sdk_main, "abi": ["main"]},
+                consensus_data_contract={"address": original_sdk_data, "abi": ["data"]},
+            ), "testnet_bradbury", "https://node.example/api"))
+        wrong_code = IdentityClient(wrong_code=True)
         self.assertFalse(GenLayerSDKDriver._verify_builtin_network_identity(
-            wrong_code, expected_bradbury, "testnet_bradbury", "https://node.example/api"))
+            wrong_code, SimpleNamespace(
+                id=4221,
+                consensus_main_contract={"address": original_sdk_main, "abi": ["main"]},
+                consensus_data_contract={"address": original_sdk_data, "abi": ["data"]},
+            ), "testnet_bradbury", "https://node.example/api"))
+        wrong_genesis = IdentityClient(genesis_hash="0x" + "f" * 64)
+        self.assertFalse(GenLayerSDKDriver._verify_builtin_network_identity(
+            wrong_genesis, SimpleNamespace(
+                id=4221,
+                consensus_main_contract={"address": original_sdk_main, "abi": ["main"]},
+                consensus_data_contract={"address": original_sdk_data, "abi": ["data"]},
+            ), "testnet_bradbury", "https://node.example/api"))
 
     def test_preflight_runs_exact_snapshot_no_broadcast_and_without_signing_capability(self):
         runtime_probe = json.loads(GenLayerSDKDriver._runtime_probe_submission())
