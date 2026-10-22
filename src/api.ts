@@ -128,6 +128,7 @@ export type GenLayerContractStatus = {
   code_present: boolean;
   lifecycle_status: string | null;
   probe_submission: boolean;
+  result_withheld?: boolean;
   result: { overall_status: string | null; requirement_count: number | null; unresolved_count: number | null; disclaimer: string | null } | null;
   explorer_url: string | null;
 };

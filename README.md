@@ -23,10 +23,12 @@ The production build is served at <https://tenderlens-lilac.vercel.app>. It read
 | Deploy transaction | `0x92801b0bd50424373ab38251a0fd5f5974272de92ed9cde358f1c4a3d2428818` |
 | Runtime | `py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6` |
 | Contract source SHA-256 | `4cad32bead8eaacda7a090925bb1b53158c5d863a9efc02d580fe33d087c1247` |
+| Evaluation transaction | `0x9b99041d8e1009ebcf420341addc396585a93e44e4967ef2a76f52c0520501aa` (`FINALIZED`) |
+| Lifecycle | `evaluated` — one evaluation of the labelled deployment probe; a real tender would need a new deployment |
 | Explorer | <https://explorer-studio.genlayer.com/address/0x481d38ede6aC854b13F3b677bc31FeCEB9214126> |
 | Evidence record | [`deployments/studionet-20261022T130714Z.json`](deployments/studionet-20261022T130714Z.json) |
 
-`GET /api/genlayer` reports the observed chain id, endpoint pinning, contract code presence and lifecycle status; `deployment.blockers` explains why a further deployment is refused (`deployment_flag_off`, `signer_key_absent`, `contract_address_already_set`). No evaluation transaction has been recorded on the contract yet, so `contract.result` is `null`; that absence is displayed as an absence, not as an evaluation outcome. Verified code presence is not target-runtime qualification, a procurement determination, or an audit of validator behaviour.
+`GET /api/genlayer` reports the observed chain id, endpoint pinning, contract code presence and lifecycle status; `deployment.blockers` explains why a further deployment is refused (`deployment_flag_off`, `signer_key_absent`, `contract_address_already_set`). Evaluation result content is session-gated: the public status document reports lifecycle and probe labelling only, and `contract.result` stays `null` for anonymous callers by design, not because the read failed. Verified code presence is not target-runtime qualification, a procurement determination, or an audit of validator behaviour.
 
 Deployment stays fail-closed: broadcasting requires the server-only `TENDERLENS_GENLAYER_BROADCAST_AUTHORIZED=1` flag, a server-held signer key and a live scoped authorization record, and redeploying an address that is already set additionally requires `TENDERLENS_GENLAYER_ALLOW_REDEPLOY=1`. See [`docs/genlayer-live-deployment.md`](docs/genlayer-live-deployment.md) for the runbook and [`deployments/README.md`](deployments/README.md) for the evidence format.
 

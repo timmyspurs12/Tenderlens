@@ -68,8 +68,11 @@ export default async function handler(req, res) {
     const authenticated = sessionState(req.headers.cookie, env);
     const status = await readGenLayerStatus({ env });
     if (!authenticated) {
-      // Strip evaluation content for anonymous callers; lifecycle labels remain.
-      status.contract = { ...status.contract, result: null };
+      // Strip evaluation content (and its read diagnostics) for anonymous
+      // callers; lifecycle labels remain. The public document must not look
+      // like a failed read when the only reason for the empty result is this
+      // privacy gate.
+      status.contract = { ...status.contract, result: null, result_error: null, result_diagnostics: null, result_withheld: status.contract.result != null };
     }
     return json(res, 200, {
       ...status,

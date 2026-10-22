@@ -21,13 +21,25 @@ qualification, a procurement determination, or an audit of validator behaviour.
 | Snapshot digest | `7a7e703ca045b5d6a9ad34213b2c8d3fff3263fe961df68dc2983c3c924577b9` |
 | Explorer | <https://explorer-studio.genlayer.com/address/0x481d38ede6aC854b13F3b677bc31FeCEB9214126> |
 | Evidence record | [`deployments/studionet-20261022T130714Z.json`](../deployments/studionet-20261022T130714Z.json) |
+| Evaluation transaction | `0x9b99041d8e1009ebcf420341addc396585a93e44e4967ef2a76f52c0520501aa` (`FINALIZED`) |
+| Lifecycle after evaluation | `evaluated` (one-way; `evaluate()` refuses a second call) |
+| Evaluation record | [`deployments/evaluation-studionet-20261022T134032Z.json`](../deployments/evaluation-studionet-20261022T134032Z.json) |
 | Workflow run | `39783933383` (`GenLayer deployment`) |
 | Checks run | `39783933797`, then `39784918827` after the routing fix (both green) |
 
 `deployed_code_matches_source: true` in the evidence record means the runtime at
 the reported address hashed to the reviewed source. It does not prove that the
-contract behaves correctly under real validator consensus, and no evaluation
-transaction has been executed against it yet.
+contract behaves correctly under real validator consensus.
+
+The evaluation has since been executed once, by run `39788790588`, against the
+labelled deployment probe (the only submission the contract holds): consensus
+returned `inconclusive` with one requirement and one unresolved item, and the
+lifecycle moved from `prepared` to `evaluated`. Because the contract accepts only
+one evaluation, this contract can never carry a real tender result — that would
+require deploying a new contract with a stored snapshot. The result JSON is
+session-gated: `/api/genlayer` returns `result: null` to anonymous callers and
+only reports lifecycle labels, so an empty public result is a privacy strip, not
+a failed read.
 
 ## How the deployment ran
 
@@ -173,7 +185,7 @@ the routing fix (commit `17b0756`, deployment
 
 | Request | Result |
 | --- | --- |
-| `GET /api/genlayer` | `200` — `reachable: true`, `observed_chain_id: 61999`, `chain_identity_verified: true`, `contract.code_present: true`, `lifecycle_status: "prepared"`, `result: null` |
+| `GET /api/genlayer` | `200` — `reachable: true`, `observed_chain_id: 61999`, `chain_identity_verified: true`, `contract.code_present: true`, `lifecycle_status` moves from `prepared` to `evaluated`, `probe_submission: true` |
 | `GET /api/auth/session` | `401` — `{"error":{"code":"unauthorized", …}}` (previously the SPA HTML) |
 | `GET /api/auth/login` | `405` — `{"error":{"code":"method_not_allowed","message":"Use POST."}}` |
 | `GET /api/tenders` | `401` — workspace sign-in still required |

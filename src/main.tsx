@@ -37,7 +37,7 @@ function GenLayerPanel({status}:{status:GenLayerStatus|'loading'|null}){
     ['Contract code',contract.address?(contract.code_present?'present on chain':'not found on chain'):'not queried'],
     ['Lifecycle',contract.lifecycle_status||'not reported'],
     ['Stored submission',contract.address?(contract.code_present?(contract.probe_submission?'labelled deployment probe (not a tender)':'tender snapshot'):'not read'):'not queried'],
-    ['Evaluation result',result?`${result.overall_status||'reported'} · ${result.requirement_count??'—'} requirements · ${result.unresolved_count??'—'} unresolved`:'not reported'],
+    ['Evaluation result',result?`${result.overall_status||'reported'} · ${result.requirement_count??'—'} requirements · ${result.unresolved_count??'—'} unresolved`:contract.result_withheld?'recorded on chain · sign in to view the workspace session result':contract.lifecycle_status==='evaluated'?'recorded on chain':'not reported'],
     ['Deployment gate',status.deployment.enabled?(status.deployment.signer_configured?'enabled with server-side signer':'enabled but no signer key'):'disabled'],
     ['Evaluation broadcast',status.deployment.broadcast_authorized?'authorized server-side':'disabled']
   ];
