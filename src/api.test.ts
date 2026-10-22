@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, asArray, createTender, isRecord, loadTenders, request, statusForApiError } from './api';
+import { ApiError, asArray, createTender, isRecord, loadTender, loadTenders, request, statusForApiError } from './api';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -75,6 +75,20 @@ describe('workspace API client', () => {
     expect(statusForApiError(new ApiError('AUTH_REQUIRED', 'sign in'))).toBe('unauthorized');
     expect(statusForApiError(new ApiError('INVALID_RESPONSE', 'bad data'))).toBe('invalid');
     expect(statusForApiError(new ApiError('API_NOT_CONFIGURED', 'configure'))).toBe('not_configured');
+  });
+
+  it('loads a single tender by id from the allowlisted route', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(record));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(loadTender('tender-1', 'https://records.example')).resolves.toEqual(record);
+    expect(fetchMock.mock.calls[0][0]).toBe('https://records.example/api/tenders/tender-1');
+  });
+
+  it('encodes the id and rejects a malformed single-tender payload', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ id: 'x' }));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(loadTender('a/b c', 'https://records.example')).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+    expect(fetchMock.mock.calls[0][0]).toBe('https://records.example/api/tenders/a%2Fb%20c');
   });
 
   it('registers a tender through the public gateway', async () => {
