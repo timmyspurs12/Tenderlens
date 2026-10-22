@@ -159,11 +159,20 @@ function assertSdkDefinition(sdk, network) {
   return chain;
 }
 
+function describe(error) {
+  const parts = [];
+  for (let current = error, depth = 0; current && depth < 3; current = current.cause, depth += 1) {
+    const text = typeof current.message === 'string' ? current.message : String(current);
+    if (text && !parts.includes(text)) parts.push(text.slice(0, 300));
+  }
+  return parts.join(' <- ').slice(0, 400) || null;
+}
+
 function sanitize(error) {
   if (error instanceof GenLayerError) return { code: error.code, hint: error.hint };
   const name = error && typeof error.name === 'string' ? error.name : '';
-  if (/timeout|timedout|abort/i.test(`${name} ${error?.code || ''}`)) return { code: 'genlayer_request_timeout', hint: null };
-  return { code: 'genlayer_request_failed', hint: null };
+  if (/timeout|timedout|abort/i.test(`${name} ${error?.code || ''}`)) return { code: 'genlayer_request_timeout', hint: describe(error) };
+  return { code: 'genlayer_request_failed', hint: describe(error) };
 }
 
 async function loadSdk() {
@@ -330,7 +339,8 @@ export async function deployGenLayerContract({ env = process.env, submission = n
   try {
     hash = await client.deployContract({ code: source, args: constructorArgs });
   } catch (error) {
-    throw new GenLayerError(sanitize(error).code, 'The node rejected the deploy before consensus was reached.');
+    const detail = sanitize(error);
+    throw new GenLayerError(detail.code, detail.hint || 'The node rejected the deploy before consensus was reached.');
   }
   if (typeof hash !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(hash)) throw new GenLayerError('deployment_transaction_reference_invalid');
 

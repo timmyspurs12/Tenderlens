@@ -23,7 +23,7 @@ on:
     paths: [".github/deploy-requests/genlayer-deploy.yml"]
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency: genlayer-deploy
 
@@ -73,6 +73,26 @@ jobs:
             done
           fi
           exit "$status"
+
+      - name: Record deployment evidence
+        if: always() && github.event_name == 'push'
+        run: |
+          mkdir -p deployments
+          stamp=$(date -u +%Y%m%dT%H%M%SZ)
+          target="deployments/${TENDERLENS_GENLAYER_NETWORK:-studionet}-${stamp}.json"
+          if [ -f deployment.json ]; then
+            cp deployment.json "$target"
+          else
+            printf '{"outcome":"failed_before_record","run":"%s"}\n' "$GITHUB_RUN_ID" > "$target"
+          fi
+          git config user.name "arena-agent"
+          git config user.email "arena-agent@users.noreply.github.com"
+          git add "$target"
+          git commit -m "Record GenLayer deployment evidence (${GITHUB_RUN_ID})" || exit 0
+          for attempt in 1 2 3; do
+            git pull --rebase --autostash origin "${GITHUB_REF_NAME}" && git push origin "HEAD:${GITHUB_REF_NAME}" && break
+            sleep 3
+          done
 
       - name: Upload deployment evidence
         if: always()
