@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import {
   buildProbeSubmission,
   deployGenLayerContract,
+  extractContractAddress,
   readConfig,
   readGenLayerStatus,
   readRuntimeReference,
@@ -130,6 +131,27 @@ describe('GenLayer deployment gate', () => {
     assert.equal(record.signer_address, OWNER);
     assert.match(sdk.state.deployed.args[0], /"schema_version":"tenderlens\.evaluation-submission\.v1"/);
     assert.equal(JSON.parse(sdk.state.deployed.args[0]).evidence.length, 0);
+  });
+
+  it('resolves a deploy address from every documented transaction shape', () => {
+    assert.equal(extractContractAddress({ txDataDecoded: { contractAddress: CONTRACT } }), CONTRACT);
+    assert.equal(extractContractAddress({ recipient: CONTRACT }), CONTRACT);
+    assert.equal(extractContractAddress({ to_address: CONTRACT }), CONTRACT);
+    assert.equal(extractContractAddress({ recipient: '0x' + '0'.repeat(40) }), null);
+    assert.equal(extractContractAddress({}), null);
+  });
+
+  it('fails closed with the transaction reference when no address is reported', async () => {
+    const sdk = fakeSdk();
+    const baseCreate = sdk.createClient.bind(sdk);
+    sdk.createClient = () => ({
+      ...baseCreate(),
+      async getTransaction() { return { status: 'FINALIZED', statusName: 'FINALIZED', resultName: 'MAJORITY_AGREE' }; },
+    });
+    await assert.rejects(
+      deployGenLayerContract({ env: enabledEnv(), sdkLoader: async () => sdk }),
+      (error) => error.code === 'deployed_contract_address_missing' && /0xc{64}/.test(error.hint),
+    );
   });
 
   it('reports pending finality without inventing a settled address', async () => {

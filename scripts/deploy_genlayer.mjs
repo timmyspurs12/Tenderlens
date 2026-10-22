@@ -52,7 +52,22 @@ if (submissionPath) {
   submission = JSON.parse(await readFile(submissionPath, 'utf8'));
 }
 
-const record = await deployGenLayerContract({ env: process.env, submission: submission || buildProbeSubmission() });
+let record;
+try {
+  record = await deployGenLayerContract({ env: process.env, submission: submission || buildProbeSubmission() });
+} catch (error) {
+  const failure = {
+    schema_version: 'tenderlens.genlayer-deployment.v1',
+    outcome: 'error',
+    network,
+    checked_at: new Date().toISOString(),
+    code: error?.code ?? 'deployment_failed',
+    hint: error?.hint ?? String(error?.message ?? error).slice(0, 400),
+  };
+  writeFileSync('deployment.json', `${JSON.stringify(failure, null, 2)}\n`);
+  console.error(JSON.stringify(failure, null, 2));
+  process.exit(1);
+}
 writeFileSync('deployment.json', `${JSON.stringify(record, null, 2)}\n`);
 
 const lines = [

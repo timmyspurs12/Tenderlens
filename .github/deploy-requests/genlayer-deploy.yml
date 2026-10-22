@@ -6,4 +6,4 @@
 confirm: deploy
 network: studionet
 mode: deploy
-note: First reviewed deployment of tests/genlayer_direct/contracts/procurement_evaluation.py
+note: Attempt 2 after fixing deploy-address extraction from the consensus transaction

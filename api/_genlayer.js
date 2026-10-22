@@ -290,6 +290,28 @@ export async function readGenLayerStatus({ env = process.env, sdkLoader = loadSd
 
 const sleep = (ms) => new Promise((resolve) => globalThis.setTimeout(resolve, ms));
 
+/**
+ * The SDK exposes a deploy's ghost-contract address as the transaction
+ * recipient, and normalizes it into txDataDecoded.contractAddress only on some
+ * code paths. Check every documented shape before concluding it is missing.
+ */
+export function extractContractAddress(transaction) {
+  if (!transaction || typeof transaction !== 'object') return null;
+  const decoded = transaction.txDataDecoded || transaction.tx_data_decoded || {};
+  const candidates = [
+    decoded.contractAddress,
+    decoded.contract_address,
+    transaction.recipient,
+    transaction.to_address,
+    transaction.to,
+    transaction.data && transaction.data.recipient,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && ADDRESS.test(candidate) && !/^0x0{40}$/i.test(candidate)) return candidate;
+  }
+  return null;
+}
+
 async function awaitFinality(client, hash, maxMs, intervalMs = 3000, wait = sleep) {
   const deadline = Date.now() + maxMs;
   let last;
@@ -345,8 +367,12 @@ export async function deployGenLayerContract({ env = process.env, submission = n
   if (typeof hash !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(hash)) throw new GenLayerError('deployment_transaction_reference_invalid');
 
   const { transaction, status } = await awaitFinality(client, hash, config.maxFinalizeMs);
-  const decoded = transaction && (transaction.txDataDecoded || transaction.tx_data_decoded);
-  const address = decoded && (decoded.contractAddress || decoded.contract_address);
+  const address = extractContractAddress(transaction);
+  const outcomeDetail = {
+    result_name: transaction?.resultName ?? null,
+    execution_result: transaction?.txExecutionResultName ?? null,
+    receipt: typeof transaction?.txReceipt === 'string' ? transaction.txReceipt : null,
+  };
   if (status !== 'FINALIZED') {
     return {
       schema_version: DEPLOYMENT_SCHEMA,
@@ -362,7 +388,12 @@ export async function deployGenLayerContract({ env = process.env, submission = n
       probe_submission: !submission,
     };
   }
-  if (!ADDRESS.test(String(address))) throw new GenLayerError('deployed_contract_address_missing');
+  if (!address) {
+    throw new GenLayerError(
+      'deployed_contract_address_missing',
+      `transaction ${hash} reached ${status} (result=${outcomeDetail.result_name ?? 'unknown'}, execution=${outcomeDetail.execution_result ?? 'unknown'}) but the node did not report a contract recipient. Treat the contract as unverified.`,
+    );
+  }
   let deployedCode;
   try {
     const code = await client.getContractCode(address);
@@ -389,6 +420,7 @@ export async function deployGenLayerContract({ env = process.env, submission = n
     deployed_code_matches_source: deployedCode,
     runtime,
     lifecycle_status: typeof lifecycle === 'string' ? lifecycle : null,
+    ...outcomeDetail,
     snapshot_digest: candidate.digest,
     digest_matches: candidate.digestMatches,
     probe_submission: !submission,
