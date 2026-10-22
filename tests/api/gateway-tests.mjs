@@ -138,13 +138,38 @@ describe('Public workspace access', () => {
     assert.equal(called, false);
   });
 
-  it('caps the declared body size for anonymous writes', async () => {
+  it('forwards registered tenders with an explicit Content-Length, not a stream', async () => {
+    // The records service rejects chunked bodies (it reads CONTENT_LENGTH), so a
+    // streamed proxy body would fail registration in production.
+    configurePublicOnly();
+    let seen = null;
+    globalThis.fetch = async (_url, options) => {
+      seen = options;
+      return new globalThis.Response(JSON.stringify({ id: 'x' }), { status: 201, headers: { 'content-type': 'application/json' } });
+    };
+    const body = JSON.stringify({ title: 'Road resurfacing', reference: 'LAG-2026-01' });
+    const res = response();
+    await handler(request('/api/tenders', { method: 'POST', headers: jsonHeaders(), body }), res);
+    assert.equal(res.statusCode, 201);
+    assert.ok(Buffer.isBuffer(seen.body), 'body must be a buffer');
+    assert.equal(seen.body.toString('utf8'), body);
+    assert.equal(seen.headers.get('content-length'), String(Buffer.byteLength(body)));
+    assert.equal(seen.duplex, undefined);
+  });
+
+  it('caps the forwarded body for anonymous writes', async () => {
     configurePublicOnly();
     let called = false;
     globalThis.fetch = async () => { called = true; return new globalThis.Response('{}', { status: 201 }); };
-    const res = response();
-    await handler(request('/api/tenders', { method: 'POST', headers: jsonHeaders({ 'content-length': String(200 * 1024) }), body: '{}' }), res);
-    assert.equal(res.statusCode, 413);
+
+    const declared = response();
+    await handler(request('/api/tenders', { method: 'POST', headers: jsonHeaders({ 'content-length': String(200 * 1024) }), body: '{}' }), declared);
+    assert.equal(declared.statusCode, 413);
+
+    const streamed = response();
+    await handler(request('/api/tenders', { method: 'POST', headers: jsonHeaders(), body: 'x'.repeat(65 * 1024) }), streamed);
+    assert.equal(streamed.statusCode, 413);
+
     assert.equal(called, false);
   });
 

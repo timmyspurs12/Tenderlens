@@ -1,6 +1,5 @@
 import { Buffer } from 'node:buffer';
 import process from 'node:process';
-import { Transform } from 'node:stream';
 import { issueSession, passwordMatches, setSessionCookie, validSession } from './_session.js';
 
 /**
@@ -27,7 +26,7 @@ import { issueSession, passwordMatches, setSessionCookie, validSession } from '.
  */
 
 const MAX_LOGIN_BYTES = 4096;
-const MAX_PUBLIC_BODY_BYTES = 128 * 1024;
+const MAX_PUBLIC_BODY_BYTES = 64 * 1024;
 const MAX_OWNER_BODY_BYTES = 20 * 1024 * 1024;
 const ALLOWED_BACKEND_PATH = /^\/api\/(?:tenders(?:\/[^?#]*)?|evaluation-requests\/[0-9a-f-]+)$/i;
 // The only write the public workspace UI performs.
@@ -117,22 +116,21 @@ export function takeToken(key, kind, limit, now = Date.now()) {
   return { allowed: true, remaining: limit - slot.count, retryAfter: 0 };
 }
 
-/** Enforce a byte ceiling on a streamed request body. */
-function bodyGuard(req, limit) {
-  let seen = 0;
-  let exceeded = false;
-  const guard = new Transform({
-    transform(chunk, _encoding, callback) {
-      seen += chunk.length;
-      if (seen > limit) {
-        exceeded = true;
-        callback(new Error('body_too_large'));
-        return;
-      }
-      callback(null, chunk);
-    },
-  });
-  return { stream: req.pipe(guard), exceeded: () => exceeded };
+/**
+ * Buffer a request body up to a byte ceiling. The body is buffered rather than
+ * streamed upstream so the forwarded request carries an explicit Content-Length:
+ * the records service rejects chunked bodies, which is exactly what an
+ * unbuffered proxy produces.
+ */
+async function readBody(req, limit) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > limit) throw new Error('body_too_large');
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
 }
 
 export default async function handler(req, res) {
@@ -227,13 +225,21 @@ export default async function handler(req, res) {
     if (typeof req.headers[key] === 'string') headers.set(key, req.headers[key]);
   }
 
-  const guarded = hasBody ? bodyGuard(req, maxBytes) : null;
+  let payload = null;
+  if (hasBody) {
+    try {
+      payload = await readBody(req, maxBytes);
+    } catch {
+      return json(res, 413, { error: { code: 'body_too_large', message: `The request body exceeds ${maxBytes} bytes.` } });
+    }
+    headers.set('content-length', String(payload.length));
+  }
+
   try {
     const upstream = await fetch(new URL(`${path}${url.search}`, cfg.backendUrl), {
       method,
       headers,
-      body: guarded ? guarded.stream : undefined,
-      ...(guarded ? { duplex: 'half' } : {}),
+      body: payload,
       redirect: 'manual',
       signal: globalThis.AbortSignal.timeout(25_000),
     });
@@ -247,9 +253,6 @@ export default async function handler(req, res) {
     const body = Buffer.from(await upstream.arrayBuffer());
     res.end(body);
   } catch {
-    if (guarded && guarded.exceeded()) {
-      return json(res, 413, { error: { code: 'body_too_large', message: `The request body exceeds ${maxBytes} bytes.` } });
-    }
     return json(res, 502, { error: { code: 'upstream_unavailable', message: 'The workspace records service could not be reached.' } });
   }
 }
