@@ -1,9 +1,7 @@
 import { Buffer } from 'node:buffer';
 import process from 'node:process';
-import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { issueSession, passwordMatches, setSessionCookie, validSession } from './_session.js';
 
-const COOKIE = '__Host-tenderlens_session';
-const SESSION_SECONDS = 8 * 60 * 60;
 const MAX_LOGIN_BYTES = 4096;
 const ALLOWED_BACKEND_PATH = /^\/api\/(?:tenders(?:\/[^?#]*)?|evaluation-requests\/[0-9a-f-]+)$/i;
 
@@ -28,39 +26,6 @@ function config() {
   return { origin, password, secret, backendUrl, token };
 }
 
-function sign(value, secret) {
-  return createHmac('sha256', secret).update(value).digest('base64url');
-}
-
-function issueSession(secret, now = Date.now()) {
-  const payload = Buffer.from(JSON.stringify({ exp: Math.floor(now / 1000) + SESSION_SECONDS, nonce: cryptoRandom() })).toString('base64url');
-  return `${payload}.${sign(payload, secret)}`;
-}
-
-function cryptoRandom() {
-  return randomBytes(24).toString('hex');
-}
-
-function validSession(cookieHeader, secret, now = Date.now()) {
-  const cookie = (cookieHeader || '').split(';').map((item) => item.trim()).find((item) => item.startsWith(`${COOKIE}=`));
-  if (!cookie) return false;
-  const value = cookie.slice(COOKIE.length + 1);
-  const [payload, signature, extra] = value.split('.');
-  if (!payload || !signature || extra) return false;
-  const expected = sign(payload, secret);
-  const actualBytes = Buffer.from(signature);
-  const expectedBytes = Buffer.from(expected);
-  if (actualBytes.length !== expectedBytes.length || !timingSafeEqual(actualBytes, expectedBytes)) return false;
-  try {
-    const data = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
-    return Number.isInteger(data.exp) && data.exp > Math.floor(now / 1000) && typeof data.nonce === 'string';
-  } catch { return false; }
-}
-
-function setSessionCookie(res, value, maxAge = SESSION_SECONDS) {
-  res.setHeader('Set-Cookie', `${COOKIE}=${value}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${maxAge}`);
-}
-
 async function readJson(req) {
   const chunks = [];
   let size = 0;
@@ -70,13 +35,6 @@ async function readJson(req) {
     chunks.push(chunk);
   }
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { throw new Error('invalid_json'); }
-}
-
-function passwordMatches(candidate, expected) {
-  if (typeof candidate !== 'string' || candidate.length > 1024) return false;
-  const left = createHmac('sha256', 'tenderlens-login-compare').update(candidate).digest();
-  const right = createHmac('sha256', 'tenderlens-login-compare').update(expected).digest();
-  return timingSafeEqual(left, right);
 }
 
 export default async function handler(req, res) {

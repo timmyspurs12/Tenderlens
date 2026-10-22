@@ -1,0 +1,8 @@
+# GenLayer deployment request marker
+#
+# A commit that changes this file triggers the "GenLayer deployment" workflow on
+# an arena/** branch. The workflow refuses to sign unless this file contains the
+# exact line below, so editing it is the explicit human confirmation.
+confirm: deploy
+network: studionet
+note: First reviewed deployment of tests/genlayer_direct/contracts/procurement_evaluation.py

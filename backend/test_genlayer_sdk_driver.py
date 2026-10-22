@@ -1015,6 +1015,10 @@ class GenLayerSDKDriverTests(unittest.TestCase):
     def test_official_bradbury_sdk_endpoint_is_only_a_candidate_until_live_checks(self):
         endpoint = "https://rpc-bradbury.genlayer.com"
         self.assertEqual(GenLayerSDKDriver._validated_bradbury_node_endpoint(endpoint), endpoint)
+        # The pinned chain definition publishes this node RPC, so an unset
+        # override now means "use the reviewed endpoint", not "blocked".
+        self.assertEqual(GenLayerSDKDriver._validated_bradbury_node_endpoint(None), endpoint)
+        self.assertEqual(GenLayerSDKDriver._validated_bradbury_node_endpoint("  "), endpoint)
         with self.assertRaisesRegex(DriverError, "underlying_bradbury_chain_rpc_not_genlayer_node"):
             GenLayerSDKDriver._validated_bradbury_node_endpoint("https://rpc.testnet-chain.genlayer.com")
 
@@ -1022,7 +1026,6 @@ class GenLayerSDKDriverTests(unittest.TestCase):
         scenarios = (
             (DriverConfig(network="", private_key="", contract_path=FIXTURE), "unsupported_network"),
             (DriverConfig(network="unknown", private_key="", contract_path=FIXTURE), "unsupported_network"),
-            (DriverConfig(network="testnet_bradbury", private_key="", contract_path=FIXTURE), "bradbury_genlayer_node_rpc_required"),
             (DriverConfig(network="testnet_bradbury", private_key="", rpc_url="http://node.example", contract_path=FIXTURE), "invalid_rpc_endpoint"),
             (DriverConfig(network="testnet_bradbury", private_key="", rpc_url="https://user:secret@node.example/api", contract_path=FIXTURE), "invalid_rpc_endpoint"),
             (DriverConfig(network="testnet_bradbury", private_key="", rpc_url="https://node.example/api?token=secret", contract_path=FIXTURE), "invalid_rpc_endpoint"),

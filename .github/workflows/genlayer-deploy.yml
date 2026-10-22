@@ -1,0 +1,70 @@
+name: GenLayer deployment
+
+# Deployment of the reviewed procurement contract is a deliberate, auditable
+# action. It never runs on ordinary pushes: it needs either a manual dispatch
+# (available once this file is on the default branch) or a change to the
+# explicit request marker below. Both paths still require the confirmation
+# string enforced by scripts/deploy_genlayer.mjs.
+on:
+  workflow_dispatch:
+    inputs:
+      network:
+        description: Reviewed GenLayer network
+        required: true
+        default: studionet
+        type: choice
+        options: [studionet, testnetBradbury]
+      confirm:
+        description: Type "deploy" to confirm a real transaction
+        required: true
+        type: string
+  push:
+    branches: ["arena/**"]
+    paths: [".github/deploy-requests/genlayer-deploy.yml"]
+
+permissions:
+  contents: read
+
+concurrency: genlayer-deploy
+
+jobs:
+  deploy:
+    name: Deploy procurement evaluation contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Get the code
+        uses: actions/checkout@v5
+
+      - name: Install Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Confirm the request marker
+        if: github.event_name == 'push'
+        run: |
+          grep -q '^confirm: deploy$' .github/deploy-requests/genlayer-deploy.yml \
+            || { echo "Request marker does not confirm a deployment."; exit 1; }
+
+      - name: Deploy and verify
+        env:
+          GENLAYER_DEPLOY_CONFIRM: ${{ github.event_name == 'push' && 'deploy' || inputs.confirm }}
+          TENDERLENS_GENLAYER_NETWORK: ${{ github.event_name == 'push' && 'studionet' || inputs.network }}
+          # Optional. Without it the job uses an ephemeral, unfunded testnet key
+          # and reports only its address. Never commit a key to this repository.
+          TENDERLENS_GENLAYER_PRIVATE_KEY: ${{ secrets.GENLAYER_PRIVATE_KEY }}
+        run: node scripts/deploy_genlayer.mjs
+
+      - name: Upload deployment evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: genlayer-deployment
+          path: deployment.json
+          if-no-files-found: warn
+          retention-days: 30

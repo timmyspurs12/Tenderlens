@@ -6,3 +6,6 @@ __pycache__/
 .env
 .env.*
 !.env.example
+
+# GenLayer deployment evidence produced by scripts/deploy_genlayer.mjs
+deployment.json
