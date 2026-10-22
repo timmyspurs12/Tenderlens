@@ -219,20 +219,25 @@ async function readClientStatus(client, config) {
     block_number: Number.isFinite(blockNumber) ? blockNumber : null,
   };
   if (!config.address) {
-    return { ...summary, contract: { address: null, code_present: false, lifecycle_status: null, result: null, probe_submission: false, explorer_url: null } };
+    return { ...summary, contract: { address: null, code_present: false, lifecycle_status: null, result: null, result_error: null, probe_submission: false, explorer_url: null } };
   }
   const codePresent = typeof code === 'string' ? code.trim().length > 0 : Boolean(code);
   let lifecycle = null;
   let result = null;
+  let resultError = null;
   let probeSubmission = false;
   if (codePresent) {
+    // Keep the read failures separate from "no result yet": a stored result that
+    // cannot be read is a diagnostics problem, not an empty evaluation.
     const [rawLifecycle, rawResult, rawSubmission] = await Promise.all([
       client.readContract({ address: config.address, functionName: 'get_lifecycle_status', args: [] }).catch(() => null),
-      client.readContract({ address: config.address, functionName: 'get_result', args: [] }).catch(() => null),
+      client.readContract({ address: config.address, functionName: 'get_result', args: [] }).catch((error) => ({ __error: sanitize(error) })),
       client.readContract({ address: config.address, functionName: 'get_submission', args: [] }).catch(() => null),
     ]);
     lifecycle = typeof rawLifecycle === 'string' ? rawLifecycle : rawLifecycle == null ? null : String(rawLifecycle);
-    result = summarizeResult(rawResult);
+    if (rawResult && typeof rawResult === 'object' && rawResult.__error) resultError = rawResult.__error;
+    else result = summarizeResult(rawResult);
+    if (result == null && rawResult != null && !resultError) resultError = { code: 'result_unparseable', hint: `The node returned ${typeof rawResult}.` };
     // The on-chain submission is immutable, so the only honest way to show a
     // result is to say whether it was computed from the labelled probe payload.
     probeSubmission = typeof rawSubmission === 'string' && rawSubmission.includes('DEPLOYMENT-PROBE-');
@@ -244,6 +249,7 @@ async function readClientStatus(client, config) {
       code_present: codePresent,
       lifecycle_status: lifecycle,
       result,
+      result_error: resultError,
       probe_submission: probeSubmission,
       explorer_url: config.pinned.explorer ? `${config.pinned.explorer}/address/${config.address}` : null,
     },
@@ -268,7 +274,7 @@ export async function readGenLayerStatus({ env = process.env, sdkLoader = loadSd
     sdk_version: null,
     reachable: false,
     block_number: null,
-    contract: { address: config.address, code_present: false, lifecycle_status: null, result: null, probe_submission: false, explorer_url: null },
+    contract: { address: config.address, code_present: false, lifecycle_status: null, result: null, result_error: null, probe_submission: false, explorer_url: null },
     deployment: {
       enabled: config.deployEnabled,
       signer_configured: config.hasPrivateKey,

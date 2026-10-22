@@ -116,6 +116,11 @@ jobs:
 
       - name: Record deployment evidence
         if: always() && github.event_name == 'push'
+        env:
+          # Defined here too: step env does not carry over, and without it an
+          # evaluation record would be filed as a deployment record.
+          GENLAYER_DEPLOY_MODE: ${{ steps.request.outputs.mode }}
+          TENDERLENS_GENLAYER_NETWORK: ${{ steps.request.outputs.network }}
         run: |
           mkdir -p deployments
           stamp=$(date -u +%Y%m%dT%H%M%SZ)
