@@ -14,11 +14,19 @@ import { buildProbeSubmission, deployGenLayerContract, readGenLayerStatus } from
 
 const network = process.env.TENDERLENS_GENLAYER_NETWORK || 'studionet';
 const confirmation = process.env.GENLAYER_DEPLOY_CONFIRM || '';
+const mode = process.env.GENLAYER_DEPLOY_MODE || 'deploy';
 const submissionPath = process.env.GENLAYER_SUBMISSION_FILE || '';
 
 if (confirmation !== 'deploy') {
   console.error('Refusing to deploy: set GENLAYER_DEPLOY_CONFIRM=deploy to confirm this is intentional.');
   process.exit(2);
+}
+
+if (mode === 'probe') {
+  process.env.TENDERLENS_GENLAYER_NETWORK = network;
+  const status = await readGenLayerStatus();
+  console.log(JSON.stringify(status, null, 2));
+  process.exit(status.reachable ? 0 : 3);
 }
 
 process.env.TENDERLENS_GENLAYER_NETWORK = network;

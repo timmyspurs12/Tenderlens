@@ -5,4 +5,5 @@
 # exact line below, so editing it is the explicit human confirmation.
 confirm: deploy
 network: studionet
+mode: probe
 note: First reviewed deployment of tests/genlayer_direct/contracts/procurement_evaluation.py

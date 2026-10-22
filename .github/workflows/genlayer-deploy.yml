@@ -50,15 +50,29 @@ jobs:
         run: |
           grep -q '^confirm: deploy$' .github/deploy-requests/genlayer-deploy.yml \
             || { echo "Request marker does not confirm a deployment."; exit 1; }
+          mode=$(sed -n 's/^mode: *//p' .github/deploy-requests/genlayer-deploy.yml | head -1)
+          echo "GENLAYER_DEPLOY_MODE=${mode:-deploy}" >> "$GITHUB_ENV"
 
       - name: Deploy and verify
         env:
           GENLAYER_DEPLOY_CONFIRM: ${{ github.event_name == 'push' && 'deploy' || inputs.confirm }}
           TENDERLENS_GENLAYER_NETWORK: ${{ github.event_name == 'push' && 'studionet' || inputs.network }}
+          TENDERLENS_GENLAYER_FINALITY_WAIT_MS: "180000"
           # Optional. Without it the job uses an ephemeral, unfunded testnet key
           # and reports only its address. Never commit a key to this repository.
           TENDERLENS_GENLAYER_PRIVATE_KEY: ${{ secrets.GENLAYER_PRIVATE_KEY }}
-        run: node scripts/deploy_genlayer.mjs
+        run: |
+          set +e
+          node scripts/deploy_genlayer.mjs 2>&1 | tee deploy.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            # Publish diagnostics as check annotations; workflow logs are not
+            # always retrievable from restricted clients.
+            tail -c 4000 deploy.log | tail -25 | sed 's/%/%25/g' | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+          fi
+          exit "$status"
 
       - name: Upload deployment evidence
         if: always()
