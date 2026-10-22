@@ -95,6 +95,14 @@ export async function loadTenders(apiBase = base): Promise<Tender[]> {
   return parseTender(await request<unknown>('/api/tenders', apiBase));
 }
 
+/** Load one tender record. The gateway allowlists GET /api/tenders/<id>. */
+export async function loadTender(id: string, apiBase = base): Promise<Tender> {
+  if (!id) throw new ApiError('INVALID_RESPONSE', 'A tender id is required.');
+  const result = await request<unknown>(`/api/tenders/${encodeURIComponent(id)}`, apiBase);
+  if (!isTender(result)) throw new ApiError('INVALID_RESPONSE', 'The service returned an invalid tender record.');
+  return result;
+}
+
 export async function createTender(input: { title: string; reference: string; deadline?: string }, apiBase = base): Promise<Tender> {
   const result = await request<unknown>('/api/tenders', apiBase, {
     method: 'POST',
