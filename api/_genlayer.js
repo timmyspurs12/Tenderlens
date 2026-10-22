@@ -230,19 +230,36 @@ async function readClientStatus(client, config) {
   if (codePresent) {
     // Keep the read failures separate from "no result yet": a stored result that
     // cannot be read is a diagnostics problem, not an empty evaluation.
-    const [rawLifecycle, rawResult, rawSubmission] = await Promise.all([
+    const empty = (value) => value == null || value === '' || (typeof value === 'object' && Object.keys(value).length === 0);
+    const [rawLifecycle, rawSubmission] = await Promise.all([
       client.readContract({ address: config.address, functionName: 'get_lifecycle_status', args: [] }).catch(() => null),
-      client.readContract({ address: config.address, functionName: 'get_result', args: [] }).catch((error) => ({ __error: sanitize(error) })),
       client.readContract({ address: config.address, functionName: 'get_submission', args: [] }).catch(() => null),
     ]);
     lifecycle = typeof rawLifecycle === 'string' ? rawLifecycle : rawLifecycle == null ? null : String(rawLifecycle);
+
+    // The SDK reads `latest-nonfinal` by default. A just-finalized write can be
+    // invisible to that view, so retry against the final state before concluding
+    // the contract holds no result.
+    let rawResult = await client.readContract({ address: config.address, functionName: 'get_result', args: [] }).catch((error) => ({ __error: sanitize(error) }));
+    let resultVariant = 'latest-nonfinal';
+    let resultAttempts = 1;
+    if (empty(rawResult) || (rawResult && rawResult.__error)) {
+      const finalRead = await client.readContract({ address: config.address, functionName: 'get_result', args: [], transactionHashVariant: 'latest-final' }).catch((error) => ({ __error: sanitize(error) }));
+      resultAttempts = 2;
+      if (!empty(finalRead) && !(finalRead && finalRead.__error)) {
+        rawResult = finalRead;
+        resultVariant = 'latest-final';
+      }
+    }
     resultDiagnostics = {
       type: rawResult === null ? 'null' : typeof rawResult,
       length: typeof rawResult === 'string' ? rawResult.length : Array.isArray(rawResult) ? rawResult.length : null,
+      variant: resultVariant,
+      attempts: resultAttempts,
     };
     if (rawResult && typeof rawResult === 'object' && rawResult.__error) resultError = rawResult.__error;
     else result = summarizeResult(rawResult);
-    if (result == null && rawResult != null && !resultError) resultError = { code: 'result_unparseable', hint: `The node returned ${resultDiagnostics.type} of length ${resultDiagnostics.length}.` };
+    if (result == null && rawResult != null && !empty(rawResult) && !resultError) resultError = { code: 'result_unparseable', hint: `The node returned ${resultDiagnostics.type} of length ${resultDiagnostics.length}.` };
     // The on-chain submission is immutable, so the only honest way to show a
     // result is to say whether it was computed from the labelled probe payload.
     probeSubmission = typeof rawSubmission === 'string' && rawSubmission.includes('DEPLOYMENT-PROBE-');

@@ -32,9 +32,11 @@ function fakeSdk(overrides = {}) {
       if (overrides.codeError) throw new Error('rpc unavailable');
       return overrides.code ?? 'class ProcurementEvaluation: pass';
     },
-    async readContract({ functionName }) {
+    async readContract({ functionName, transactionHashVariant }) {
       if (functionName === 'get_lifecycle_status') return overrides.lifecycle ?? 'prepared';
       if (functionName === 'get_result') {
+        // A lagging non-final view returns nothing until the final state is read.
+        if (overrides.resultLagging && transactionHashVariant !== 'latest-final') return '';
         return JSON.stringify({ overall_status: 'inconclusive', decisions: [{}, {}], unresolved_requirements: [{}], disclaimer: 'Evidence interpretation only.' });
       }
       if (functionName === 'get_submission') {
@@ -256,6 +258,26 @@ describe('Deployment evidence resolution', () => {
     assert.equal(resolveRecordedAddress([], 'studionet'), null);
     assert.equal(resolveRecordedAddress([good({ contract_address: '0x' + '0'.repeat(40) })]), null);
     assert.equal(resolveRecordedAddress([good({ network: 'testnetBradbury' })], 'studionet'), null);
+  });
+});
+
+describe('GenLayer result read retry', () => {
+  it('retries against the final view when the non-final read is empty', async () => {
+    const status = await readGenLayerStatus({ env: { TENDERLENS_GENLAYER_CONTRACT_ADDRESS: CONTRACT }, sdkLoader: async () => fakeSdk({ resultLagging: true }) });
+    assert.equal(status.contract.result.overall_status, 'inconclusive');
+    assert.equal(status.contract.result_diagnostics.variant, 'latest-final');
+    assert.equal(status.contract.result_diagnostics.attempts, 2);
+    assert.equal(status.contract.result_error, null);
+  });
+
+  it('keeps an absent result absent when both views are empty', async () => {
+    const sdk = fakeSdk();
+    const baseCreate = sdk.createClient.bind(sdk);
+    sdk.createClient = () => ({ ...baseCreate(), async readContract({ functionName }) { return functionName === 'get_lifecycle_status' ? 'prepared' : ''; } });
+    const status = await readGenLayerStatus({ env: { TENDERLENS_GENLAYER_CONTRACT_ADDRESS: CONTRACT }, sdkLoader: async () => sdk });
+    assert.equal(status.contract.result, null);
+    assert.equal(status.contract.result_error, null);
+    assert.equal(status.contract.result_diagnostics.attempts, 2);
   });
 });
 
