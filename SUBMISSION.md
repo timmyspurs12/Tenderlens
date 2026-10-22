@@ -21,6 +21,32 @@ Both explorer paths are live and were checked on 2026-10-22:
 `/address/<contract>` and `/tx/<hash>`. The `/contracts/<contract>` path also
 resolves to the same contract page.
 
+## Path to follow in the live build (paste into the form)
+
+Use the `tenderlens-lilac.vercel.app` alias, not a per-deployment URL: writes are
+checked against that exact origin.
+
+```
+1. https://tenderlens-lilac.vercel.app/ - click "Open the workbench".
+2. https://tenderlens-lilac.vercel.app/app - the tender register loads with no sign-in and no passphrase.
+3. https://tenderlens-lilac.vercel.app/app/tenders/new - enter a title and reference, submit; the new record opens at /app/tenders/<id>.
+4. https://tenderlens-lilac.vercel.app/app/settings - GenLayer panel: Studionet 61999, chain identity verified, contract 0x481d38ede6aC854b13F3b677bc31FeCEB9214126, code present, lifecycle "evaluated", stored submission labelled as a deployment probe.
+```
+
+Longer variant, if the field has room:
+
+```
+1. Open https://tenderlens-lilac.vercel.app/ and click "Open the workbench".
+2. The tender register loads immediately at https://tenderlens-lilac.vercel.app/app - no account, no passphrase.
+3. Click "Register tender" or open https://tenderlens-lilac.vercel.app/app/tenders/new - enter a title and reference, submit, and the new record opens at https://tenderlens-lilac.vercel.app/app/tenders/<id>.
+4. Open Settings at https://tenderlens-lilac.vercel.app/app/settings for the on-chain panel: Studionet 61999, endpoint pinned, contract 0x481d38ede6aC854b13F3b677bc31FeCEB9214126, code present, lifecycle "evaluated", result labelled as a deployment probe.
+5. API proof, paste any of these in the address bar: /api/auth/session (mode "public"), /api/tenders (records), /api/genlayer (live chain read).
+```
+
+Verified on 2026-10-22 against production deploy `dpl_4BJLDPzTieSgCJNUNHKvEyaWDqLM`
+(commit `14de8b4`): `/api/auth/session` returns `mode:"public"`, `/api/tenders`
+returns `{"items":[]}`, `/app` and `/app/tenders/new` render without a sign-in card.
+
 ## Portal fields
 
 **Title**
