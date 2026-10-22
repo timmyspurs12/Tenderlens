@@ -25,6 +25,7 @@ if (confirmation !== 'deploy') {
 if (mode === 'probe') {
   process.env.TENDERLENS_GENLAYER_NETWORK = network;
   const status = await readGenLayerStatus();
+  writeFileSync('deployment.json', `${JSON.stringify({ schema_version: 'tenderlens.genlayer-status.v1', outcome: status.reachable ? 'probe_reachable' : 'probe_unreachable', checked_at: new Date().toISOString(), ...status }, null, 2)}\n`);
   console.log(JSON.stringify(status, null, 2));
   process.exit(status.reachable ? 0 : 3);
 }

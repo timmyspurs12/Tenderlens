@@ -78,7 +78,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Resolve the evaluation target from recorded evidence
-        if: steps.request.outputs.mode == 'evaluate'
+        if: steps.request.outputs.mode != 'deploy'
         id: target
         env:
           TARGET_NETWORK: ${{ steps.request.outputs.network }}
