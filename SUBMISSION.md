@@ -23,29 +23,48 @@ resolves to the same contract page.
 
 ## Path to follow in the live build (paste into the form)
 
-Use the `tenderlens-lilac.vercel.app` alias, not a per-deployment URL: writes are
+Written as user navigation, not a reviewer checklist. Use the
+`tenderlens-lilac.vercel.app` alias, never a per-deployment URL: writes are
 checked against that exact origin.
 
-```
-1. https://tenderlens-lilac.vercel.app/ - click "Open the workbench".
-2. https://tenderlens-lilac.vercel.app/app - the tender register loads with no sign-in and no passphrase.
-3. https://tenderlens-lilac.vercel.app/app/tenders/new - enter a title and reference, submit; the new record opens at /app/tenders/<id>.
-4. https://tenderlens-lilac.vercel.app/app/settings - GenLayer panel: Studionet 61999, chain identity verified, contract 0x481d38ede6aC854b13F3b677bc31FeCEB9214126, code present, lifecycle "evaluated", stored submission labelled as a deployment probe.
-```
-
-Longer variant, if the field has room:
+Compact variant:
 
 ```
-1. Open https://tenderlens-lilac.vercel.app/ and click "Open the workbench".
-2. The tender register loads immediately at https://tenderlens-lilac.vercel.app/app - no account, no passphrase.
-3. Click "Register tender" or open https://tenderlens-lilac.vercel.app/app/tenders/new - enter a title and reference, submit, and the new record opens at https://tenderlens-lilac.vercel.app/app/tenders/<id>.
-4. Open Settings at https://tenderlens-lilac.vercel.app/app/settings for the on-chain panel: Studionet 61999, endpoint pinned, contract 0x481d38ede6aC854b13F3b677bc31FeCEB9214126, code present, lifecycle "evaluated", result labelled as a deployment probe.
-5. API proof, paste any of these in the address bar: /api/auth/session (mode "public"), /api/tenders (records), /api/genlayer (live chain read).
+1. Open https://tenderlens-lilac.vercel.app and click "Open the workbench".
+2. The tender register loads at /app with no sign-in: browse it, or search by title and reference.
+3. Click "Register tender" (/app/tenders/new). Enter a published title and reference, submit, and the new record opens in the register at /app/tenders/<id>.
+4. Open Settings (/app/settings) to read the contract live: Studionet 61999, chain identity verified, contract 0x481d38ede6aC854b13F3b677bc31FeCEB9214126, code present, lifecycle "evaluated".
 ```
 
-Verified on 2026-10-22 against production deploy `dpl_4BJLDPzTieSgCJNUNHKvEyaWDqLM`
-(commit `14de8b4`): `/api/auth/session` returns `mode:"public"`, `/api/tenders`
-returns `{"items":[]}`, `/app` and `/app/tenders/new` render without a sign-in card.
+Longer variant, step by step:
+
+```
+1. Open https://tenderlens-lilac.vercel.app. The landing page states what the product does and its limits; the interface preview is labelled ILLUSTRATIVE - NO TENDER DATA. Click "Open the workbench".
+2. The workbench opens at https://tenderlens-lilac.vercel.app/app with no account and no passphrase. The strip across the top shows how many tenders are registered and whether the records service is connected. The search box (Cmd/Ctrl+K) filters by title or reference.
+3. Click "Register tender", or open https://tenderlens-lilac.vercel.app/app/tenders/new. Enter the published tender title and reference, optionally the deadline, and submit. The record is written to the workspace service and appears in the register.
+4. Click a register row to open that tender at https://tenderlens-lilac.vercel.app/app/tenders/<id>. The banner shows the stored title, reference, deadline and registration time, with Overview, Documents, Amendments, Evaluation and Report tabs. Views report plainly when the connected service has returned no tender-specific data rather than inventing it.
+5. Open https://tenderlens-lilac.vercel.app/app/settings for the GenLayer panel, read live on page load: Studionet (chain id 61999), endpoint pinned, contract 0x481d38ede6aC854b13F3b677bc31FeCEB9214126, code present on chain, lifecycle "evaluated", and the stored submission labelled as a deployment probe.
+6. Optional API check, paste after the domain: /api/auth/session (mode "public"), /api/tenders (the register as JSON), /api/genlayer (the same chain read).
+```
+
+## What the website lets a visitor do
+
+| Task | Where |
+| --- | --- |
+| Understand the product and its stated limits | `/` |
+| Browse, search and filter every registered tender | `/app` |
+| Register a tender - the only write open to any visitor | `/app/tenders/new` |
+| Open a tender record: identity, deadline, registration time, workspace tabs | `/app/tenders/<id>` |
+| Verify the deployed contract's chain identity, code presence and lifecycle | `/app/settings` |
+| Read the register, the access mode and the chain status as JSON | `/api/...` |
+
+## Storage note
+
+The workspace service keeps records in SQLite at `TENDERLENS_DB_PATH`
+(`./var/tenderlens.sqlite3` by default). On a host without a persistent disk the
+register is emptied whenever the service restarts or redeploys. Records created
+for a walkthrough should therefore be created immediately before review, or the
+service must be given a persistent volume.
 
 ## Portal fields
 
@@ -58,7 +77,7 @@ TenderLens — procurement evaluation Intelligent Contract (deployed + evaluated
 **Description** (fits the 1,000-character field)
 
 ```
-TenderLens is a source-first procurement review workspace. Its GenLayer Intelligent Contract, procurement_evaluation.py, evaluates a frozen tender snapshot: validators interpret each requirement against cited evidence excerpts and return a structured result (per-requirement status, evidence references, unresolved items) plus a disclaimer. Deterministic checks validate the snapshot digest, sorted-key canonical JSON and evidence provenance before any model interpretation. Lifecycle: prepared -> evaluated (one-way), with get_lifecycle_status, get_submission and get_result views. Deployed on Studionet (61999) and evaluated once: the deploy and evaluate transactions are both FINALIZED with GenVM SUCCESS and consensus Accepted. The evaluation used a labelled DEPLOYMENT-PROBE payload (no real tender data exists), so its result is inconclusive by design and is disclosed as a smoke test, not a procurement finding. The Vercel app reads the contract live through /api/genlayer.
+TenderLens is a source-first procurement review workspace that shows its reasoning. Documents and amendments are versioned; a frozen snapshot turns requirements and evidence excerpts into one canonical, hashed payload that becomes the constructor input of a GenLayer Intelligent Contract on Studionet (61999), so the assessed input cannot be edited afterwards. evaluate() has validators interpret each requirement against those excerpts and return per-requirement status, cited evidence IDs, and every item left unresolved. Deterministic checks verify the snapshot digest and evidence provenance before any model interpretation, and each result carries a disclaimer: evidence interpretation, not legal advice or an award. The workspace reads the chain back and reports chain identity, endpoint pinning, code presence, lifecycle and probe labels. Limits: the deployed instance was evaluated once with a labelled probe payload, so it is a smoke test; the workbench is public, no passphrase required.
 ```
 
 **Evidence** — add each row as its own evidence item (description + URL):
@@ -85,6 +104,22 @@ TenderLens is a source-first procurement review workspace. Its GenLayer Intellig
   determination is valid. The single evaluation used the labelled probe payload,
   and the contract accepts exactly one evaluation, so this deployment can never
   carry a real tender result.
+
+## Review verification (paste into the form)
+
+```
+Verified in production on 2026-10-22. /app opens with no sign-in card and no passphrase field; the tender register loads anonymously and a registered tender opens at /app/tenders/<id> with its stored title, reference and deadline. /api/auth/session returns 200 with mode public; /api/genlayer returns lifecycle evaluated with the probe result visible to anonymous callers. Contract access is pinned to Studionet 61999 and fails closed; privileged writes return 401.
+```
+
+## Project links
+
+- Website (required): <https://tenderlens-lilac.vercel.app>
+- GitHub: <https://github.com/timmyspurs12/Tenderlens>
+- Contract link 1: <https://explorer-studio.genlayer.com/address/0x481d38ede6aC854b13F3b677bc31FeCEB9214126>
+
+Do **not** submit a `/tx/` URL. The portal's contract-link field expects an
+address page and its evidence field expects typed sources (GitHub Repository is
+the required one). The address page lists both transactions anyway.
 
 ## Before submitting
 
