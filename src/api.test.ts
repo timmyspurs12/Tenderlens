@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, asArray, createTender, isRecord, loadTender, loadTenders, request, statusForApiError } from './api';
+import {
+  ApiError, asArray, createTender, isRecord, isStartupRetryable, loadTender, loadTenderWithWakeup,
+  loadTenders, loadTendersWithWakeup, request, statusForApiError, WAKE_BUDGETS_MS,
+} from './api';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -68,6 +71,61 @@ describe('workspace API client', () => {
       options.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
     })));
     await expect(request('/api/tenders', 'https://records.example', {}, 5)).rejects.toMatchObject({ code: 'TIMEOUT' });
+  });
+
+  it('classifies only cold-start-shaped failures as retryable', () => {
+    expect(isStartupRetryable(new ApiError('TIMEOUT', 'slow'))).toBe(true);
+    expect(isStartupRetryable(new ApiError('NETWORK_ERROR', 'offline'))).toBe(true);
+    expect(isStartupRetryable(new ApiError('HTTP_ERROR', 'gateway', 502))).toBe(true);
+    expect(isStartupRetryable(new ApiError('HTTP_ERROR', 'gateway', 503))).toBe(true);
+    expect(isStartupRetryable(new ApiError('HTTP_ERROR', 'gateway', 504))).toBe(true);
+    expect(isStartupRetryable(new ApiError('HTTP_ERROR', 'missing', 404))).toBe(false);
+    expect(isStartupRetryable(new ApiError('AUTH_REQUIRED', 'refused', 401))).toBe(false);
+    expect(isStartupRetryable(new ApiError('INVALID_RESPONSE', 'bad json'))).toBe(false);
+    expect(isStartupRetryable(new Error('unrelated'))).toBe(false);
+  });
+
+  it('keeps every waking budget under the gateway upstream ceiling', () => {
+    expect(WAKE_BUDGETS_MS.length).toBeGreaterThan(1);
+    for (const budget of WAKE_BUDGETS_MS) expect(budget).toBeLessThanOrEqual(50_000);
+  });
+
+  it('retries a sleeping records host and reports the wake before the second attempt', async () => {
+    const fetchMock = vi.fn()
+      .mockRejectedValueOnce(new TypeError('fetch failed'))
+      .mockResolvedValueOnce(jsonResponse({ items: [record] }));
+    vi.stubGlobal('fetch', fetchMock);
+    const onWake = vi.fn();
+    await expect(loadTendersWithWakeup('https://records.example', { onWake })).resolves.toEqual([record]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(onWake).toHaveBeenCalledWith(1);
+  });
+
+  it('does not retry a refusal or a missing record', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({}, 401));
+    vi.stubGlobal('fetch', fetchMock);
+    const onWake = vi.fn();
+    await expect(loadTendersWithWakeup('https://records.example', { onWake })).rejects.toMatchObject({ code: 'AUTH_REQUIRED' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(onWake).not.toHaveBeenCalled();
+  });
+
+  it('gives up after the budgets are exhausted and rethrows the last failure', async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new TypeError('fetch failed'));
+    vi.stubGlobal('fetch', fetchMock);
+    const onWake = vi.fn();
+    await expect(loadTendersWithWakeup('https://records.example', { onWake, budgets: [1, 1] })).rejects.toMatchObject({ code: 'NETWORK_ERROR' });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(onWake).toHaveBeenCalledTimes(1);
+  });
+
+  it('wakes before reading a single tender record', async () => {
+    const fetchMock = vi.fn()
+      .mockRejectedValueOnce(new TypeError('fetch failed'))
+      .mockResolvedValueOnce(jsonResponse(record));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(loadTenderWithWakeup('tender-1', 'https://records.example')).resolves.toEqual(record);
+    expect(fetchMock.mock.calls[1][0]).toBe('https://records.example/api/tenders/tender-1');
   });
 
   it('requires a configured gateway and maps API states', async () => {

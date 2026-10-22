@@ -40,7 +40,7 @@ Longer variant, step by step:
 
 ```
 1. Open https://tenderlens-lilac.vercel.app. The landing page states what the product does and its limits; the interface preview is labelled ILLUSTRATIVE - NO TENDER DATA. Click "Open the workbench".
-2. The workbench opens at https://tenderlens-lilac.vercel.app/app with no account and no passphrase. The strip across the top shows how many tenders are registered and whether the records service is connected. The search box (Cmd/Ctrl+K) filters by title or reference.
+2. The workbench opens at https://tenderlens-lilac.vercel.app/app with no account and no passphrase. If the records service has been idle, this first load can take up to a minute while the instance starts; the page says it is waking the service and retries automatically. The strip across the top shows how many tenders are registered and whether the records service is connected. The search box (Cmd/Ctrl+K) filters by title or reference.
 3. Click "Register tender", or open https://tenderlens-lilac.vercel.app/app/tenders/new. Enter the published tender title and reference, optionally the deadline, and submit. The record is written to the workspace service and appears in the register.
 4. Click a register row to open that tender at https://tenderlens-lilac.vercel.app/app/tenders/<id>. The banner shows the stored title, reference, deadline and registration time, with Overview, Documents, Amendments, Evaluation and Report tabs. Views report plainly when the connected service has returned no tender-specific data rather than inventing it.
 5. Open https://tenderlens-lilac.vercel.app/app/settings for the GenLayer panel, read live on page load: Studionet (chain id 61999), endpoint pinned, contract 0x481d38ede6aC854b13F3b677bc31FeCEB9214126, code present on chain, lifecycle "evaluated", and the stored submission labelled as a deployment probe.
@@ -60,11 +60,22 @@ Longer variant, step by step:
 
 ## Storage note
 
-The workspace service keeps records in SQLite at `TENDERLENS_DB_PATH`
-(`./var/tenderlens.sqlite3` by default). On a host without a persistent disk the
-register is emptied whenever the service restarts or redeploys. Records created
-for a walkthrough should therefore be created immediately before review, or the
-service must be given a persistent volume.
+The workspace runs on a free compute plan, which does not support a persistent
+disk. The records service keeps the register in SQLite at `TENDERLENS_DB_PATH`
+(`./var/tenderlens.sqlite3` by default), and that file is cleared whenever the
+service restarts or redeploys. This is the documented behaviour of the hosting
+tier, not a broken integration:
+
+- A tender registered through the form is a real record with a real id, and it
+  opens immediately.
+- An `/app/tenders/<id>` link stops resolving after a restart. The detail page
+  says the record is no longer held rather than blaming the identifier.
+- The register can therefore be empty when a steward opens it.
+
+Free instances also stop after a period of inactivity. The first request after
+that can take up to a minute while the instance starts; the workbench reports
+that it is waking the records service and retries on its own, and the gateway
+waits 50 seconds upstream before reporting a timeout.
 
 ## Portal fields
 
