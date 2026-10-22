@@ -8,6 +8,7 @@ import {
   readGenLayerStatus,
   submitGenLayerEvaluation,
   readRuntimeReference,
+  resolveRecordedAddress,
   validateSubmissionForDeployment,
   NETWORKS,
 } from '../../api/_genlayer.js';
@@ -236,6 +237,25 @@ describe('GenLayer evaluation broadcast', () => {
     assert.equal(status.contract.probe_submission, true);
     const tendered = await readGenLayerStatus({ env: { TENDERLENS_GENLAYER_CONTRACT_ADDRESS: CONTRACT }, sdkLoader: async () => fakeSdk({ probe: false }) });
     assert.equal(tendered.contract.probe_submission, false);
+  });
+});
+
+describe('Deployment evidence resolution', () => {
+  const good = (overrides) => ({ outcome: 'finalized', network: 'studionet', contract_address: '0x' + 'b'.repeat(40), checked_at: '2026-10-22T13:07:14.000Z', ...overrides });
+
+  it('uses the newest finalized record and ignores failures', () => {
+    const resolved = resolveRecordedAddress([
+      good({ checked_at: '2026-10-22T13:05:25.000Z', outcome: 'failed_before_record', contract_address: undefined }),
+      good({ contract_address: '0x' + 'a'.repeat(40), checked_at: '2026-10-22T12:00:00.000Z' }),
+      good(),
+    ]);
+    assert.equal(resolved.address, '0x' + 'b'.repeat(40));
+  });
+
+  it('refuses to guess when no finalized record is eligible', () => {
+    assert.equal(resolveRecordedAddress([], 'studionet'), null);
+    assert.equal(resolveRecordedAddress([good({ contract_address: '0x' + '0'.repeat(40) })]), null);
+    assert.equal(resolveRecordedAddress([good({ network: 'testnetBradbury' })], 'studionet'), null);
   });
 });
 

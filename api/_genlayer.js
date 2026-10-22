@@ -422,6 +422,7 @@ export async function deployGenLayerContract({ env = process.env, submission = n
   return {
     schema_version: DEPLOYMENT_SCHEMA,
     outcome: 'finalized',
+    checked_at: new Date().toISOString(),
     transaction_hash: hash,
     contract_address: address,
     status,
@@ -528,4 +529,19 @@ export async function submitGenLayerEvaluation({ env = process.env, sdkLoader = 
     probe_submission: typeof rawSubmission === 'string' ? rawSubmission.includes('DEPLOYMENT-PROBE-') : null,
     explorer_url: config.pinned.explorer ? `${config.pinned.explorer}/address/${config.address}` : null,
   };
+}
+
+/**
+ * Pick the contract address from recorded deployment evidence instead of
+ * trusting a dashboard variable. Only a `finalized` records that carry a valid
+ * address and (when stated) the requested network are eligible; the newest wins.
+ */
+export function resolveRecordedAddress(records, network = DEFAULT_NETWORK) {
+  const eligible = (Array.isArray(records) ? records : [])
+    .filter((record) => record && record.outcome === 'finalized')
+    .filter((record) => typeof record.contract_address === 'string' && ADDRESS.test(record.contract_address) && !/^0x0{40}$/i.test(record.contract_address))
+    .filter((record) => !record.network || record.network === network)
+    .sort((a, b) => String(a.checked_at || '').localeCompare(String(b.checked_at || '')));
+  const latest = eligible[eligible.length - 1];
+  return latest ? { address: latest.contract_address, transaction_hash: latest.transaction_hash ?? null, checked_at: latest.checked_at ?? null, network: latest.network ?? network } : null;
 }

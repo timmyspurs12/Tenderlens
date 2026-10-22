@@ -36,6 +36,16 @@ if (mode === 'evaluate') {
   process.env.TENDERLENS_GENLAYER_NETWORK = network;
   process.env.TENDERLENS_GENLAYER_BROADCAST_AUTHORIZED = process.env.TENDERLENS_GENLAYER_BROADCAST_AUTHORIZED || '1';
   process.env.TENDERLENS_GENLAYER_FINALITY_WAIT_MS = process.env.TENDERLENS_GENLAYER_FINALITY_WAIT_MS || '180000';
+  // The contract has no owner check and Studionet charges no gas, so a CI-run
+  // evaluation does not need a stored key. Sign with an ephemeral one when no
+  // secret is configured and say so in the record.
+  let ephemeralSigner = false;
+  if (!process.env.TENDERLENS_GENLAYER_PRIVATE_KEY) {
+    const { generatePrivateKey } = await import('genlayer-js');
+    process.env.TENDERLENS_GENLAYER_PRIVATE_KEY = generatePrivateKey();
+    ephemeralSigner = true;
+    console.error('No GENLAYER_PRIVATE_KEY secret configured: signing with an ephemeral key (its address is recorded).');
+  }
   let evaluation;
   try {
     evaluation = await submitGenLayerEvaluation({ env: process.env });
@@ -53,6 +63,7 @@ if (mode === 'evaluate') {
     console.error(JSON.stringify(failure, null, 2));
     process.exit(1);
   }
+  evaluation.signer_ephemeral = ephemeralSigner;
   writeFileSync('deployment.json', `${JSON.stringify(evaluation, null, 2)}\n`);
   console.log(JSON.stringify(evaluation, null, 2));
   process.exit(evaluation.outcome === 'finalized' ? 0 : 2);

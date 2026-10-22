@@ -77,15 +77,24 @@ jobs:
             echo "confirm=${confirm}"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Resolve the evaluation target from recorded evidence
+        if: steps.request.outputs.mode == 'evaluate'
+        id: target
+        env:
+          TARGET_NETWORK: ${{ steps.request.outputs.network }}
+        run: |
+          address=$(node scripts/resolve_contract_address.mjs "$TARGET_NETWORK" deployments)
+          echo "address=$address" >> "$GITHUB_OUTPUT"
+
       - name: Deploy, evaluate or probe
         env:
           GENLAYER_DEPLOY_CONFIRM: ${{ steps.request.outputs.confirm }}
           GENLAYER_DEPLOY_MODE: ${{ steps.request.outputs.mode }}
           TENDERLENS_GENLAYER_NETWORK: ${{ steps.request.outputs.network }}
           TENDERLENS_GENLAYER_FINALITY_WAIT_MS: "180000"
-          # Evaluate mode reads the deployed address from the repository
-          # variables so the workflow cannot silently target a different contract.
-          TENDERLENS_GENLAYER_CONTRACT_ADDRESS: ${{ steps.request.outputs.mode == 'evaluate' && vars.GENLAYER_CONTRACT_ADDRESS || '' }}
+          # An evaluation targets the address in the repository's finalized
+          # evidence, never a dashboard value that could drift from it.
+          TENDERLENS_GENLAYER_CONTRACT_ADDRESS: ${{ steps.target.outputs.address }}
           # Only an explicit evaluate request may broadcast; deploy and probe stay
           # read-only or construction-only.
           TENDERLENS_GENLAYER_BROADCAST_AUTHORIZED: ${{ steps.request.outputs.mode == 'evaluate' && '1' || '' }}
