@@ -7,7 +7,7 @@
     "dev": "vite --host 0.0.0.0",
     "build": "tsc -b && vite build",
     "typecheck": "tsc -b --pretty",
-    "test": "vitest run && node --test tests/api/gateway-tests.mjs tests/api/genlayer-tests.mjs",
+    "test": "vitest run && node --test tests/api/gateway-tests.mjs tests/api/genlayer-tests.mjs tests/api/tender-record-tests.mjs",
     "lint": "eslint ."
   },
   "dependencies": {

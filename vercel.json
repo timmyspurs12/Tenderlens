@@ -4,6 +4,14 @@
   "outputDirectory": "dist",
   "rewrites": [
     {
+      "source": "/api/tenders/:id",
+      "destination": "/api/tender-record?id=:id"
+    },
+    {
+      "source": "/api/tenders/:id/:rest",
+      "destination": "/api/tender-record?id=:id&rest=:rest"
+    },
+    {
       "source": "/app",
       "destination": "/index.html"
     },
@@ -25,6 +33,9 @@
     "api/genlayer.js": {
       "maxDuration": 60,
       "includeFiles": "tests/genlayer_direct/contracts/**"
+    },
+    "api/tender-record.js": {
+      "maxDuration": 60
     }
   },
   "headers": [
