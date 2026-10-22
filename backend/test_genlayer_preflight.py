@@ -163,13 +163,30 @@ class GenLayerPreflightTests(unittest.TestCase):
         self.assertEqual(self.by_id(report, "target.remote_identity")["status"], "unknown")
         for name, (chain_id, endpoint) in SUPPORTED_NETWORKS.items():
             self.assertIsInstance(chain_id, int)
-            if name == "testnet_bradbury":
-                self.assertIsNone(endpoint)
-            else:
-                self.assertTrue(endpoint.startswith("https://"))
+            self.assertTrue(endpoint.startswith("https://"))
         self.assertIn("chain ID alone is insufficient", self.by_id(report, "target.remote_identity")["resolution"])
         self.assertIsNone(report["offline_evidence"]["target"]["remote_chain_id_observed"])
         self.assertEqual(report["offline_evidence"]["target"]["sdk_descriptor_chain_id"], 4221)
+
+        candidate = self.report({
+            "TENDERLENS_GENLAYER_NETWORK": "testnet_bradbury",
+            "TENDERLENS_GENLAYER_RPC_URL": SUPPORTED_NETWORKS["testnet_bradbury"][1],
+        })
+        self.assertEqual(self.by_id(candidate, "target.endpoint_configuration")["status"], "verified")
+        self.assertEqual(self.by_id(candidate, "target.remote_identity")["status"], "unknown")
+        self.assertFalse(candidate["ready_to_deploy"])
+        self.assertIn("does not qualify the remote node", self.by_id(candidate, "target.endpoint_configuration")["summary"])
+
+        underlying = self.report({
+            "TENDERLENS_GENLAYER_NETWORK": "testnet_bradbury",
+            "TENDERLENS_GENLAYER_RPC_URL": "https://rpc.testnet-chain.genlayer.com",
+        })
+        self.assertEqual(self.by_id(underlying, "target.endpoint_configuration")["status"], "blocked")
+        custom = self.report({
+            "TENDERLENS_GENLAYER_NETWORK": "testnet_bradbury",
+            "TENDERLENS_GENLAYER_RPC_URL": "https://qualified-node.example",
+        })
+        self.assertEqual(self.by_id(custom, "target.endpoint_configuration")["status"], "requires_user_action")
 
     def test_local_fee_profile_digest_and_cap_are_reported_without_fabricating_a_live_quote(self):
         source = (self.root / "tests/genlayer_direct/contracts/procurement_evaluation.py").read_bytes()

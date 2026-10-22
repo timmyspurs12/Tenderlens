@@ -27,11 +27,13 @@ EXPECTED_TEST_SUITE_COMMIT = "d84591b58746a6202b56b720199ce7b9f12fd666"
 # It proves the reference is documented, not that it is supported by a chosen target.
 OFFICIAL_IMMUTABLE_RUNTIME = "1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6"
 OFFICIAL_RUNTIME_SOURCE_URL = "https://github.com/genlayerlabs/genlayer-docs/blob/7c3ad7c4bc738a7c55d05df780dd76c2cb052db6/pages/developers/intelligent-contracts/first-contract.mdx"
+BRADBURY_SDK_RPC_CANDIDATE = "https://rpc-bradbury.genlayer.com"
+BRADBURY_CHAIN_RPC = "https://rpc.testnet-chain.genlayer.com"
 SUPPORTED_NETWORKS = {
     "studionet": (61999, "https://studio.genlayer.com/api"),
-    # The SDK preset is not accepted as proof of a GenLayer node RPC. An explicit
-    # operator-approved node endpoint and live identity probe remain prerequisites.
-    "testnet_bradbury": (4221, None),
+    # The pinned SDK names this candidate. Offline string matching is not node,
+    # chain-identity, gen_* capability, or runtime qualification evidence.
+    "testnet_bradbury": (4221, BRADBURY_SDK_RPC_CANDIDATE),
     "testnet_asimov": (4221, "https://rpc-asimov.genlayer.com"),
 }
 SYNTHETIC_SNAPSHOT_ID = "00000000-0000-4000-8000-000000000001"
@@ -476,9 +478,22 @@ def collect_report(root: Path, env: dict[str, str], *, versions: dict[str, str |
 
     rpc_value = env.get("TENDERLENS_GENLAYER_RPC_URL", "")
     if network == "testnet_bradbury":
-        rpc_status = "requires_user_action"
-        rpc_summary = "No qualified Bradbury GenLayer node RPC is established locally; the SDK preset and underlying EVM RPC are not accepted as node identity evidence."
-        rpc_evidence = "No endpoint was contacted or printed; an operator-approved GenLayer node URL and documented identity procedure are absent from offline evidence."
+        if not rpc_value:
+            rpc_status = "requires_user_action"
+            rpc_summary = "No Bradbury GenLayer node RPC is configured. The pinned SDK candidate is available, but no remote identity or capability check has run."
+            rpc_evidence = "No endpoint was contacted or printed; the endpoint setting is absent."
+        elif rpc_value == BRADBURY_SDK_RPC_CANDIDATE:
+            rpc_status = "verified"
+            rpc_summary = "The configured string matches the pinned SDK's Bradbury RPC candidate; this does not qualify the remote node, current Bradbury deployment, gen_* methods, or contract runtime."
+            rpc_evidence = "Local string comparison against the genlayer-py 0.19.0rc2 chain descriptor only; no request made."
+        elif rpc_value == BRADBURY_CHAIN_RPC:
+            rpc_status = "blocked"
+            rpc_summary = "The configured endpoint is the underlying GenLayer Chain RPC, not the GenLayer node RPC required for intelligent-contract methods."
+            rpc_evidence = "Local exact-string comparison only; no request made and the endpoint value is not printed."
+        else:
+            rpc_status = "requires_user_action"
+            rpc_summary = "A custom Bradbury endpoint is configured; an offline check cannot establish that it is an operator-qualified GenLayer node."
+            rpc_evidence = "Endpoint value was not printed; no network request or identity probe was made."
     elif network in SUPPORTED_NETWORKS:
         expected_rpc = SUPPORTED_NETWORKS[network][1]
         if not rpc_value or rpc_value == expected_rpc:
@@ -495,14 +510,14 @@ def collect_report(root: Path, env: dict[str, str], *, versions: dict[str, str |
         rpc_evidence = "No network selection was established; RPC URL value is not printed."
     checks.append(_check(
         "target.endpoint_configuration", rpc_status, rpc_summary, rpc_evidence,
-        "Select the target first; if an override is supplied, it must match the pinned SDK descriptor. A future network identity check requires separate explicit authorization and is not part of this preflight.",
+        "For Bradbury, use the SDK candidate or an explicitly qualified operator node; never substitute the underlying chain RPC. Run the separate read-only RPC qualification only from an authorized network runner. This offline check never contacts a node.",
         requires_user_action=rpc_status != "verified", resolution_scope="external_read_only",
     ))
     checks.append(_check(
         "target.remote_identity", "unknown",
-        "The remote chain/network identity is not verified by a local name, endpoint string, or chain ID. Asimov and Bradbury share chain ID 4221 in the pinned SDK.",
-        "No RPC request or network probe was performed; no existing local evidence authenticates the remote endpoint.",
-        "After explicit authorization, obtain authoritative target identity evidence using the operator-approved read-only procedure; chain ID alone is insufficient for the two 4221 descriptors.",
+        "The remote chain/network identity is not verified by a local name, endpoint string, or chain ID. Asimov and Bradbury share chain ID 4221 in the pinned SDK; Bradbury also requires its expected genesis and current AddressManager registry.",
+        "No RPC request or network probe was performed; no existing local evidence authenticates the remote endpoint or its dynamic contract mapping.",
+        "After explicit authorization, verify chain ID, genesis hash, current AddressManager mappings and code, and documented gen_* methods with the read-only qualification procedure; chain ID alone is insufficient.",
         requires_user_action=True, resolution_scope="external_read_only",
     ))
 
