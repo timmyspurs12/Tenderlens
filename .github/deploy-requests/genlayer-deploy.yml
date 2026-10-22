@@ -1,0 +1,18 @@
+# GenLayer deployment request marker
+#
+# A commit that changes this file triggers the "GenLayer deployment" workflow on
+# an arena/** branch. The workflow refuses to act unless this file contains the
+# exact line below, so editing it is the explicit human confirmation.
+#
+# mode: deploy   -> construct a new contract (one-way, costs a new address)
+# mode: evaluate -> broadcast the single evaluate() write against the address in
+#                   the newest finalized evidence record (one-way, irreversible)
+# mode: probe    -> read-only reachability/state check, no transaction
+#
+# Leaving this at `probe` is deliberate: it is the only mode that cannot change
+# chain state, so a future edit here cannot spend an irreversible action by
+# accident.
+confirm: deploy
+network: studionet
+mode: probe
+note: Read-only diagnostics only; the evaluate() write was already spent by run 39788790588

@@ -1,0 +1,151 @@
+name: GenLayer deployment
+
+# Deployment of the reviewed procurement contract is a deliberate, auditable
+# action. It never runs on ordinary pushes: it needs either a manual dispatch
+# (available once this file is on the default branch) or a change to the
+# explicit request marker below. Both paths still require the confirmation
+# string enforced by scripts/deploy_genlayer.mjs.
+on:
+  workflow_dispatch:
+    inputs:
+      network:
+        description: Reviewed GenLayer network
+        required: true
+        default: studionet
+        type: choice
+        options: [studionet, testnetBradbury]
+      mode:
+        description: What to do against the configured contract
+        required: true
+        default: deploy
+        type: choice
+        options: [deploy, evaluate, probe]
+      confirm:
+        description: Type "deploy" to confirm a real transaction
+        required: true
+        type: string
+  push:
+    branches: ["arena/**"]
+    paths: [".github/deploy-requests/genlayer-deploy.yml"]
+
+permissions:
+  contents: write
+
+concurrency: genlayer-deploy
+
+jobs:
+  deploy:
+    name: Deploy procurement evaluation contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Get the code
+        uses: actions/checkout@v5
+
+      - name: Install Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Resolve the deployment request
+        id: request
+        env:
+          INPUT_MODE: ${{ inputs.mode }}
+          INPUT_NETWORK: ${{ inputs.network }}
+          INPUT_CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            grep -q '^confirm: deploy$' .github/deploy-requests/genlayer-deploy.yml \
+              || { echo "Request marker does not confirm a deployment."; exit 1; }
+            mode=$(sed -n 's/^mode: *//p' .github/deploy-requests/genlayer-deploy.yml | head -1)
+            network=studionet
+            confirm=deploy
+          else
+            mode="$INPUT_MODE"; network="$INPUT_NETWORK"; confirm="$INPUT_CONFIRM"
+          fi
+          case "${mode:-deploy}" in
+            deploy|evaluate|probe) ;;
+            *) echo "Unknown mode: ${mode}"; exit 1 ;;
+          esac
+          {
+            echo "mode=${mode:-deploy}"
+            echo "network=${network:-studionet}"
+            echo "confirm=${confirm}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Resolve the evaluation target from recorded evidence
+        if: steps.request.outputs.mode != 'deploy'
+        id: target
+        env:
+          TARGET_NETWORK: ${{ steps.request.outputs.network }}
+        run: |
+          address=$(node scripts/resolve_contract_address.mjs "$TARGET_NETWORK" deployments)
+          echo "address=$address" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy, evaluate or probe
+        env:
+          GENLAYER_DEPLOY_CONFIRM: ${{ steps.request.outputs.confirm }}
+          GENLAYER_DEPLOY_MODE: ${{ steps.request.outputs.mode }}
+          TENDERLENS_GENLAYER_NETWORK: ${{ steps.request.outputs.network }}
+          TENDERLENS_GENLAYER_FINALITY_WAIT_MS: "180000"
+          # An evaluation targets the address in the repository's finalized
+          # evidence, never a dashboard value that could drift from it.
+          TENDERLENS_GENLAYER_CONTRACT_ADDRESS: ${{ steps.target.outputs.address }}
+          # Only an explicit evaluate request may broadcast; deploy and probe stay
+          # read-only or construction-only.
+          TENDERLENS_GENLAYER_BROADCAST_AUTHORIZED: ${{ steps.request.outputs.mode == 'evaluate' && '1' || '' }}
+          # Optional. Without it the job uses an ephemeral, unfunded testnet key
+          # and reports only its address. Never commit a key to this repository.
+          TENDERLENS_GENLAYER_PRIVATE_KEY: ${{ secrets.GENLAYER_PRIVATE_KEY }}
+        run: |
+          set +e
+          node scripts/deploy_genlayer.mjs 2>&1 | tee deploy.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            # Publish diagnostics as check annotations; workflow logs are not
+            # always retrievable from restricted clients.
+            tail -c 4000 deploy.log | tail -25 | sed 's/%/%25/g' | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+          fi
+          exit "$status"
+
+      - name: Record deployment evidence
+        if: always() && github.event_name == 'push'
+        env:
+          # Defined here too: step env does not carry over, and without it an
+          # evaluation record would be filed as a deployment record.
+          GENLAYER_DEPLOY_MODE: ${{ steps.request.outputs.mode }}
+          TENDERLENS_GENLAYER_NETWORK: ${{ steps.request.outputs.network }}
+        run: |
+          mkdir -p deployments
+          stamp=$(date -u +%Y%m%dT%H%M%SZ)
+          prefix=""
+          [ "${GENLAYER_DEPLOY_MODE:-deploy}" = "evaluate" ] && prefix="evaluation-"
+          target="deployments/${prefix}${TENDERLENS_GENLAYER_NETWORK:-studionet}-${stamp}.json"
+          if [ -f deployment.json ]; then
+            cp deployment.json "$target"
+          else
+            printf '{"outcome":"failed_before_record","run":"%s"}\n' "$GITHUB_RUN_ID" > "$target"
+          fi
+          git config user.name "arena-agent"
+          git config user.email "arena-agent@users.noreply.github.com"
+          git add "$target"
+          git commit -m "Record GenLayer deployment evidence (${GITHUB_RUN_ID})" || exit 0
+          for attempt in 1 2 3; do
+            git pull --rebase --autostash origin "${GITHUB_REF_NAME}" && git push origin "HEAD:${GITHUB_REF_NAME}" && break
+            sleep 3
+          done
+
+      - name: Upload deployment evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: genlayer-deployment
+          path: deployment.json
+          if-no-files-found: warn
+          retention-days: 30

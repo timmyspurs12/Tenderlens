@@ -64,7 +64,7 @@ def only_keys(body, allowed):
 
 class TenderLensAPI:
     def __init__(self, db_path: str|Path, blob_dir: str|Path, token: str, workspace: str="default", snapshot_hmac_key: str|None=None,
-                 *, evaluation_submitter=None, broadcast_authorized: bool=False):
+                 *, evaluation_submitter=None, broadcast_authorized: bool=False, genlayer_state: dict|None=None):
         if len(token)<32: raise ValueError("TENDERLENS_API_TOKEN must contain at least 32 characters")
         key=snapshot_hmac_key or os.environ.get("TENDERLENS_SNAPSHOT_HMAC_KEY") or token
         if len(key)<32: raise ValueError("TENDERLENS_SNAPSHOT_HMAC_KEY must contain at least 32 characters when configured")
@@ -72,6 +72,7 @@ class TenderLensAPI:
         self.token=token; self.workspace=workspace; self.snapshot_hmac_key=key.encode("utf-8")
         self.evaluation_submitter=evaluation_submitter
         self.broadcast_authorized=broadcast_authorized is True
+        self.genlayer_state=genlayer_state or {"mode":"unavailable","read_only":True,"broadcast":False,"code":"driver_not_configured"}
         with self.db() as c:
             c.executescript(SCHEMA)
             self.migrate_evaluation_request_ledger(c)
@@ -169,6 +170,8 @@ class TenderLensAPI:
         if not valid_id(tid): return None
         return c.execute("SELECT * FROM tenders WHERE id=? AND workspace=?",(tid,self.workspace)).fetchone()
     def route(self,m,p,e):
+        if p=="/api/genlayer/capabilities" and m=="GET":
+            return 200,self.genlayer_state
         if p=="/api/tenders" and m=="GET":
             with self.db() as c: rows=c.execute("SELECT id,title,reference,deadline,created_at FROM tenders WHERE workspace=? ORDER BY created_at DESC",(self.workspace,)).fetchall()
             return 200,{"items":[dict(r) for r in rows]}
@@ -490,6 +493,7 @@ def create_app(*, evaluation_submitter=None):
     # authorization enabled, live read-only qualification/funding checks must also
     # pass before a submission port is exposed. No factory path broadcasts.
     broadcast_authorized=os.environ.get("TENDERLENS_GENLAYER_BROADCAST_AUTHORIZED")=="1"
+    genlayer_state={"mode":"unavailable","read_only":True,"broadcast":False,"code":None}
     if evaluation_submitter is None:
         try:
             from backend.genlayer_sdk_driver import DriverConfig, GenLayerSDKDriver
@@ -499,13 +503,27 @@ def create_app(*, evaluation_submitter=None):
             else:
                 driver.validate_configuration(preview_only=True)
             evaluation_submitter=driver
-        except Exception:
-            # Fail closed. The authenticated API remains usable for records and
-            # snapshots, but submission/preflight routes report that GenLayer is
-            # unavailable until all server-side prerequisites qualify.
-            evaluation_submitter=None
+            genlayer_state={"mode":"broadcast_ready" if broadcast_authorized else "configured_unqualified",
+                            "read_only":not broadcast_authorized,"broadcast":broadcast_authorized,"code":None}
+        except Exception as broadcast_error:
+            # Read-only connectivity does not require a fee profile, signer, or
+            # broadcast authorization. Probe that narrower configuration so a
+            # records host can still report a real, non-signing GenLayer link.
+            try:
+                from backend.genlayer_sdk_driver import DriverConfig, GenLayerSDKDriver
+                GenLayerSDKDriver(DriverConfig.from_environment()).validate_readonly_configuration()
+                genlayer_state={"mode":"read_only_qualified","read_only":True,"broadcast":False,
+                                "code":getattr(broadcast_error,"code","broadcast_configuration_incomplete")}
+            except Exception as readonly_error:
+                # Fail closed. The authenticated API remains usable for records and
+                # snapshots, but submission/preflight routes report that GenLayer is
+                # unavailable until all server-side prerequisites qualify.
+                genlayer_state={"mode":"unavailable","read_only":True,"broadcast":False,
+                                "code":getattr(readonly_error,"code","configuration_failed")}
+                evaluation_submitter=None
     return TenderLensAPI(db,blobs,token,os.environ.get("TENDERLENS_WORKSPACE","default"),
-                         evaluation_submitter=evaluation_submitter,broadcast_authorized=broadcast_authorized)
+                         evaluation_submitter=evaluation_submitter,broadcast_authorized=broadcast_authorized,
+                         genlayer_state=genlayer_state)
 if __name__=="__main__":
     app=create_app(); host,port=server_bind_config()
     with make_server(host,port,app) as server: print(f"TenderLens API listening on {host}:{port}"); server.serve_forever()

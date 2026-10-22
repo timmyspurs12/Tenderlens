@@ -1,0 +1,21 @@
+{
+  "schema_version": "tenderlens.genlayer-deployment.v1",
+  "outcome": "finalized",
+  "transaction_hash": "0x92801b0bd50424373ab38251a0fd5f5974272de92ed9cde358f1c4a3d2428818",
+  "contract_address": "0x481d38ede6aC854b13F3b677bc31FeCEB9214126",
+  "status": "FINALIZED",
+  "network": "studionet",
+  "chain_id": 61999,
+  "signer_address": "0xc9f9f74dA9C84851d4e5E1d7C736C100f685E080",
+  "contract_source_sha256": "4cad32bead8eaacda7a090925bb1b53158c5d863a9efc02d580fe33d087c1247",
+  "deployed_code_matches_source": true,
+  "runtime": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6",
+  "lifecycle_status": "prepared",
+  "result_name": null,
+  "execution_result": null,
+  "receipt": null,
+  "snapshot_digest": "7a7e703ca045b5d6a9ad34213b2c8d3fff3263fe961df68dc2983c3c924577b9",
+  "digest_matches": true,
+  "probe_submission": true,
+  "explorer_url": "https://explorer-studio.genlayer.com/address/0x481d38ede6aC854b13F3b677bc31FeCEB9214126"
+}

@@ -40,6 +40,7 @@ SDK_DEFAULT_ENDPOINTS = {
     "testnet_asimov": "https://rpc-asimov.genlayer.com",
 }
 MAX_FEE_PROFILE_AGE = timedelta(days=7)
+BRADBURY_NODE_ENDPOINT = "https://rpc-bradbury.genlayer.com"
 BRADBURY_GENESIS_HASH = "0x17d89764d4f4f963158fc4c5e8f2cb670c2837740b35f37081c12860c3df97e4"
 BRADBURY_ADDRESS_MANAGER = "0x3f71ae080bd6270a91dbcc7960d88797828538e0"
 # Current official Bradbury protocol manifest at commit
@@ -370,7 +371,13 @@ class GenLayerSDKDriver:
 
     @staticmethod
     def _validated_bradbury_node_endpoint(endpoint: str | None) -> str:
-        if not isinstance(endpoint, str) or not endpoint.strip():
+        # The pinned genlayer-js/genlayer-py chain definitions publish this node
+        # RPC. Using it as the reviewed default removes a configuration blocker
+        # without weakening the identity, genesis and consensus-address checks
+        # that still run against whatever endpoint is selected.
+        if endpoint is None or (isinstance(endpoint, str) and not endpoint.strip()):
+            return BRADBURY_NODE_ENDPOINT
+        if not isinstance(endpoint, str):
             raise DriverError("bradbury_genlayer_node_rpc_required")
         try:
             parsed = urlsplit(endpoint)
@@ -906,6 +913,18 @@ class GenLayerSDKDriver:
             require_broadcast=True, allow_unapproved=preview_only, preview_only=preview_only
         )
         self._load_fee_profile(source)
+        return True
+
+    def validate_readonly_configuration(self) -> bool:
+        """Qualify read-only connectivity without a fee profile, signer, or broadcast.
+
+        Reading a deployed contract's lifecycle or result needs none of the
+        deployment gates. Requiring a measured fee profile here previously made
+        every read-only wiring attempt fail closed, which is why no host could
+        report a live GenLayer connection. Signing and broadcasting still require
+        the full gate set in ``_static_preflight(require_broadcast=True)``.
+        """
+        self._static_preflight(require_broadcast=False)
         return True
 
     def prepare_readonly(self) -> Runtime:

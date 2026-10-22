@@ -122,3 +122,83 @@ export async function createTender(input: { title: string; reference: string; de
   if (!isTender(result)) throw new ApiError('INVALID_RESPONSE', 'The service returned an invalid tender record.');
   return result;
 }
+
+export type GenLayerContractStatus = {
+  address: string | null;
+  code_present: boolean;
+  lifecycle_status: string | null;
+  probe_submission: boolean;
+  result_withheld?: boolean;
+  result: { overall_status: string | null; requirement_count: number | null; unresolved_count: number | null; disclaimer: string | null } | null;
+  explorer_url: string | null;
+};
+
+export type GenLayerStatus = {
+  schema_version: string;
+  checked_at: string;
+  configured: boolean;
+  network: string | null;
+  expected_chain_id: number | null;
+  observed_chain_id: number | null;
+  chain_identity_verified: boolean;
+  endpoint: string | null;
+  endpoint_pinned: boolean;
+  sdk_version: string | null;
+  reachable: boolean;
+  block_number: number | null;
+  contract: GenLayerContractStatus;
+  deployment: { enabled: boolean; signer_configured: boolean; redeploy_allowed: boolean; broadcast_authorized: boolean; blockers: string[] };
+  error: { code: string; hint: string | null } | null;
+  authenticated: boolean;
+};
+
+function optionalString(value: unknown): string | null {
+  return typeof value === 'string' && value ? value : null;
+}
+
+export async function loadGenLayerStatus(apiBase = base): Promise<GenLayerStatus> {
+  const result = await request<unknown>('/api/genlayer', apiBase, {}, 20_000);
+  if (!isRecord(result) || result.schema_version !== 'tenderlens.genlayer-status.v1' || typeof result.reachable !== 'boolean') {
+    throw new ApiError('INVALID_RESPONSE', 'The GenLayer status response did not match the documented schema.');
+  }
+  const contract = isRecord(result.contract) ? result.contract : {};
+  const deployment = isRecord(result.deployment) ? result.deployment : {};
+  const error = isRecord(result.error) && typeof result.error.code === 'string' ? { code: result.error.code, hint: optionalString(result.error.hint) } : null;
+  const resultSummary = isRecord(contract.result) ? contract.result : null;
+  return {
+    schema_version: 'tenderlens.genlayer-status.v1',
+    checked_at: optionalString(result.checked_at) ?? '',
+    configured: result.configured === true,
+    network: optionalString(result.network),
+    expected_chain_id: typeof result.expected_chain_id === 'number' ? result.expected_chain_id : null,
+    observed_chain_id: typeof result.observed_chain_id === 'number' ? result.observed_chain_id : null,
+    chain_identity_verified: result.chain_identity_verified === true,
+    endpoint: optionalString(result.endpoint),
+    endpoint_pinned: result.endpoint_pinned !== false,
+    sdk_version: optionalString(result.sdk_version),
+    reachable: result.reachable === true,
+    block_number: typeof result.block_number === 'number' ? result.block_number : null,
+    contract: {
+      address: optionalString(contract.address),
+      code_present: contract.code_present === true,
+      lifecycle_status: optionalString(contract.lifecycle_status),
+      probe_submission: contract.probe_submission === true,
+      result: resultSummary ? {
+        overall_status: optionalString(resultSummary.overall_status),
+        requirement_count: typeof resultSummary.requirement_count === 'number' ? resultSummary.requirement_count : null,
+        unresolved_count: typeof resultSummary.unresolved_count === 'number' ? resultSummary.unresolved_count : null,
+        disclaimer: optionalString(resultSummary.disclaimer),
+      } : null,
+      explorer_url: optionalString(contract.explorer_url),
+    },
+    deployment: {
+      enabled: deployment.enabled === true,
+      signer_configured: deployment.signer_configured === true,
+      redeploy_allowed: deployment.redeploy_allowed === true,
+      broadcast_authorized: deployment.broadcast_authorized === true,
+      blockers: Array.isArray(deployment.blockers) ? deployment.blockers.filter((item): item is string => typeof item === 'string') : [],
+    },
+    error,
+    authenticated: result.authenticated === true,
+  };
+}
