@@ -9,7 +9,7 @@ import {
   readRuntimeReference,
   validateSubmissionForDeployment,
   NETWORKS,
-} from './_genlayer.js';
+} from '../../api/_genlayer.js';
 
 const OWNER = '0x' + 'a'.repeat(40);
 const CONTRACT = '0x' + 'b'.repeat(40);
@@ -22,8 +22,14 @@ function fakeSdk(overrides = {}) {
   };
   const client = {
     async getChainId() { return overrides.observedChainId ?? 61999; },
-    async getBlockNumber() { return 4242; },
-    async getContractCode() { return overrides.code ?? 'class ProcurementEvaluation: pass'; },
+    async getBlockNumber() {
+      if (overrides.blockNumberError) throw new Error('rpc unavailable');
+      return 4242;
+    },
+    async getContractCode() {
+      if (overrides.codeError) throw new Error('rpc unavailable');
+      return overrides.code ?? 'class ProcurementEvaluation: pass';
+    },
     async readContract({ functionName }) {
       if (functionName === 'get_lifecycle_status') return overrides.lifecycle ?? 'prepared';
       if (functionName === 'get_result') {
@@ -65,6 +71,18 @@ describe('GenLayer live status connector', () => {
     assert.equal(config.pinned.chainId, 61999);
     assert.equal(config.hasPrivateKey, true);
     assert.equal(Object.hasOwn(config, 'privateKey'), false);
+  });
+
+  it('omits a failed liveness read instead of inventing a block height', async () => {
+    const status = await readGenLayerStatus({ env: {}, sdkLoader: async () => fakeSdk({ blockNumberError: true }) });
+    assert.equal(status.reachable, true);
+    assert.equal(status.block_number, null);
+  });
+
+  it('reports a configured address with unreadable code as absent code', async () => {
+    const status = await readGenLayerStatus({ env: { TENDERLENS_GENLAYER_CONTRACT_ADDRESS: CONTRACT }, sdkLoader: async () => fakeSdk({ codeError: true }) });
+    assert.equal(status.contract.address, CONTRACT);
+    assert.equal(status.contract.code_present, false);
   });
 
   it('reports a verified chain identity and contract lifecycle', async () => {

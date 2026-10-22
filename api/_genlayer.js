@@ -186,7 +186,14 @@ async function loadSdk() {
 async function readClientStatus(client, config) {
   const chainId = Number(await client.getChainId());
   if (chainId !== config.pinned.chainId) throw new GenLayerError('chain_identity_mismatch');
-  const blockNumber = Number(await client.getBlockNumber());
+  // Independent reads run together: this status route is the first thing the
+  // workspace fetches, and each serial round trip is a visible second of
+  // "Checking GenLayer" on a cold load.
+  const [rawBlockNumber, code] = await Promise.all([
+    client.getBlockNumber().catch(() => null),
+    config.address ? client.getContractCode(config.address).catch(() => null) : Promise.resolve(null),
+  ]);
+  const blockNumber = rawBlockNumber == null ? null : Number(rawBlockNumber);
   const summary = {
     chain_identity_verified: true,
     observed_chain_id: chainId,
@@ -195,25 +202,17 @@ async function readClientStatus(client, config) {
   if (!config.address) {
     return { ...summary, contract: { address: null, code_present: false, lifecycle_status: null, explorer_url: null } };
   }
-  let code;
-  try {
-    code = await client.getContractCode(config.address);
-  } catch {
-    return { ...summary, contract: { address: config.address, code_present: false, lifecycle_status: null, explorer_url: `${config.pinned.explorer}/address/${config.address}` } };
-  }
   const codePresent = typeof code === 'string' ? code.trim().length > 0 : Boolean(code);
   let lifecycle = null;
   let result = null;
   if (codePresent) {
+    const [rawLifecycle, rawResult] = await Promise.all([
+      client.readContract({ address: config.address, functionName: 'get_lifecycle_status', args: [] }).catch(() => null),
+      client.readContract({ address: config.address, functionName: 'get_result', args: [] }).catch(() => null),
+    ]);
+    lifecycle = typeof rawLifecycle === 'string' ? rawLifecycle : rawLifecycle == null ? null : String(rawLifecycle);
     try {
-      lifecycle = await client.readContract({ address: config.address, functionName: 'get_lifecycle_status', args: [] });
-      lifecycle = typeof lifecycle === 'string' ? lifecycle : String(lifecycle);
-    } catch {
-      lifecycle = null;
-    }
-    try {
-      const raw = await client.readContract({ address: config.address, functionName: 'get_result', args: [] });
-      const text = typeof raw === 'string' ? raw : String(raw ?? '');
+      const text = typeof rawResult === 'string' ? rawResult : String(rawResult ?? '');
       if (text) {
         const parsed = JSON.parse(text);
         result = {
