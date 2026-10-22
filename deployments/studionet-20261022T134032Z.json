@@ -1,0 +1,25 @@
+{
+  "schema_version": "tenderlens.genlayer-evaluation.v1",
+  "checked_at": "2026-10-22T13:40:31.363Z",
+  "network": "studionet",
+  "chain_id": 61999,
+  "contract_address": "0x481d38ede6aC854b13F3b677bc31FeCEB9214126",
+  "transaction_hash": "0x9b99041d8e1009ebcf420341addc396585a93e44e4967ef2a76f52c0520501aa",
+  "signer_address": "0x8c98a868F9fF8FF0c554c5A5499fcAe9A7f0d215",
+  "status": "FINALIZED",
+  "lifecycle_status_before": "prepared",
+  "result_name": null,
+  "execution_result": null,
+  "receipt": null,
+  "outcome": "finalized",
+  "lifecycle_status": "evaluated",
+  "result": {
+    "overall_status": "inconclusive",
+    "requirement_count": 1,
+    "unresolved_count": 1,
+    "disclaimer": "Evidence interpretation only; not legal advice and not an automatic procurement award."
+  },
+  "probe_submission": true,
+  "explorer_url": "https://explorer-studio.genlayer.com/address/0x481d38ede6aC854b13F3b677bc31FeCEB9214126",
+  "signer_ephemeral": true
+}
