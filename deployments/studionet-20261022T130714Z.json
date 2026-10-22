@@ -16,6 +16,6 @@
   "receipt": null,
   "snapshot_digest": "7a7e703ca045b5d6a9ad34213b2c8d3fff3263fe961df68dc2983c3c924577b9",
   "digest_matches": true,
-  "probe_submission": false,
+  "probe_submission": true,
   "explorer_url": "https://explorer-studio.genlayer.com/address/0x481d38ede6aC854b13F3b677bc31FeCEB9214126"
 }

@@ -55,6 +55,9 @@ if (submissionPath) {
 let record;
 try {
   record = await deployGenLayerContract({ env: process.env, submission: submission || buildProbeSubmission() });
+  // The connector reports whether the caller supplied a submission; this run
+  // supplies a synthetic probe whenever no submission file was requested.
+  record.probe_submission = !submission;
 } catch (error) {
   const failure = {
     schema_version: 'tenderlens.genlayer-deployment.v1',
