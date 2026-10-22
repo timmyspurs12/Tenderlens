@@ -65,15 +65,11 @@ export default async function handler(req, res) {
   const origin = env.TENDERLENS_PUBLIC_ORIGIN;
 
   if (method === 'GET' || method === 'HEAD') {
+    // The workspace is public, and every value here is already public on chain,
+    // so the stored result is returned to anonymous callers too. `authenticated`
+    // now reports whether this caller holds the optional owner session.
     const authenticated = sessionState(req.headers.cookie, env);
     const status = await readGenLayerStatus({ env });
-    if (!authenticated) {
-      // Strip evaluation content (and its read diagnostics) for anonymous
-      // callers; lifecycle labels remain. The public document must not look
-      // like a failed read when the only reason for the empty result is this
-      // privacy gate.
-      status.contract = { ...status.contract, result: null, result_error: null, result_diagnostics: null, result_withheld: status.contract.result != null };
-    }
     return json(res, 200, {
       ...status,
       authenticated,
