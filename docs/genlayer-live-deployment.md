@@ -22,7 +22,7 @@ qualification, a procurement determination, or an audit of validator behaviour.
 | Explorer | <https://explorer-studio.genlayer.com/address/0x481d38ede6aC854b13F3b677bc31FeCEB9214126> |
 | Evidence record | [`deployments/studionet-20261022T130714Z.json`](../deployments/studionet-20261022T130714Z.json) |
 | Workflow run | `39783933383` (`GenLayer deployment`) |
-| Checks run | `39783933797` (`TenderLens Checks`, green) |
+| Checks run | `39783933797`, then `39784918827` after the routing fix (both green) |
 
 `deployed_code_matches_source: true` in the evidence record means the runtime at
 the reported address hashed to the reviewed source. It does not prove that the
@@ -131,3 +131,19 @@ fail-closed:
 Records access is separate from the GenLayer read-only status: the workspace
 still needs the owner passphrase configured in Vercel, and the gateway proxies
 only tender and evaluation-request paths.
+
+## Production verification (2026-10-22T13:15Z)
+
+Checked against the production alias `https://tenderlens-lilac.vercel.app` after
+the routing fix (`fd0ae9c`, deployment promoted to production):
+
+| Request | Result |
+| --- | --- |
+| `GET /api/genlayer` | `200` — `reachable: true`, `observed_chain_id: 61999`, `chain_identity_verified: true`, `contract.code_present: true`, `lifecycle_status: "prepared"`, `result: null` |
+| `GET /api/auth/session` | `401` — `{"error":{"code":"unauthorized", …}}` (previously the SPA HTML) |
+| `GET /api/auth/login` | `405` — `{"error":{"code":"method_not_allowed","message":"Use POST."}}` |
+| `GET /api/tenders` | `401` — workspace sign-in still required |
+
+The built client bundle contains `/api/genlayer`, the
+`tenderlens.genlayer-status.v1` schema check, and the live-status copy, and no
+longer contains the retired "No verified live TenderLens contract" claim.
