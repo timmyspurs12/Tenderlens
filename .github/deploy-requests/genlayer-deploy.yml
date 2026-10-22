@@ -1,9 +1,14 @@
 # GenLayer deployment request marker
 #
 # A commit that changes this file triggers the "GenLayer deployment" workflow on
-# an arena/** branch. The workflow refuses to sign unless this file contains the
+# an arena/** branch. The workflow refuses to act unless this file contains the
 # exact line below, so editing it is the explicit human confirmation.
+#
+# mode: deploy   -> construct a new contract
+# mode: evaluate -> broadcast the single evaluate() write against the address in
+#                   the newest finalized evidence record (one-way, irreversible)
+# mode: probe    -> read-only reachability check, no transaction
 confirm: deploy
 network: studionet
-mode: deploy
-note: Attempt 2 after fixing deploy-address extraction from the consensus transaction
+mode: evaluate
+note: Operator approved evaluating the deployed probe contract; result is labelled probe, not a tender finding
