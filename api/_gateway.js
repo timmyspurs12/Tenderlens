@@ -35,6 +35,11 @@ const ALLOWED_METHODS = ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'];
 const RATE_WINDOW_MS = 60_000;
 const RATE_LIMITS = { read: 120, write: 8 };
 const MAX_BUCKETS = 5000;
+// A records host on a free compute plan stops when idle and needs tens of
+// seconds to start again. Hold the upstream request long enough to cover that
+// cold start, but stay under the function's 60s maxDuration so the visitor gets
+// a real answer rather than a platform kill.
+const UPSTREAM_TIMEOUT_MS = 50_000;
 
 function json(res, status, value) {
   res.statusCode = status;
@@ -241,7 +246,7 @@ export default async function handler(req, res) {
       headers,
       body: payload,
       redirect: 'manual',
-      signal: globalThis.AbortSignal.timeout(25_000),
+      signal: globalThis.AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
     });
     if (upstream.status >= 300 && upstream.status < 400) return json(res, 502, { error: { code: 'upstream_redirect_rejected', message: 'The records service returned an unexpected redirect.' } });
     res.statusCode = upstream.status;
@@ -252,7 +257,20 @@ export default async function handler(req, res) {
     if (contentType) res.setHeader('Content-Type', contentType);
     const body = Buffer.from(await upstream.arrayBuffer());
     res.end(body);
-  } catch {
+  } catch (error) {
+    // Separate "still starting" from "not reachable": the first is a normal
+    // cold start on free compute and the client retries it, the second is a
+    // real outage. Both are reported without inventing any record data.
+    const name = error && typeof error === 'object' && 'name' in error ? String(error.name) : '';
+    if (name === 'TimeoutError' || name === 'AbortError') {
+      res.setHeader('Retry-After', '5');
+      return json(res, 504, {
+        error: {
+          code: 'upstream_timeout',
+          message: `The records service did not answer within ${Math.round(UPSTREAM_TIMEOUT_MS / 1000)}s. An idle instance may still be starting.`,
+        },
+      });
+    }
     return json(res, 502, { error: { code: 'upstream_unavailable', message: 'The workspace records service could not be reached.' } });
   }
 }

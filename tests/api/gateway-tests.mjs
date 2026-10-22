@@ -251,6 +251,27 @@ describe('Optional owner session', () => {
   });
 });
 
+describe('Cold-start handling', () => {
+  it('reports an upstream timeout as 504 so the client can retry a waking instance', async () => {
+    configurePublicOnly();
+    globalThis.fetch = async () => { throw new globalThis.DOMException('The operation was aborted due to timeout', 'TimeoutError'); };
+    const res = response();
+    await handler(request('/api/tenders'), res);
+    assert.equal(res.statusCode, 504);
+    assert.equal(JSON.parse(res.body).error.code, 'upstream_timeout');
+    assert.equal(res.headers['retry-after'], '5');
+  });
+
+  it('keeps a genuine connection failure distinct from a cold start', async () => {
+    configurePublicOnly();
+    globalThis.fetch = async () => { throw new TypeError('fetch failed'); };
+    const res = response();
+    await handler(request('/api/tenders'), res);
+    assert.equal(res.statusCode, 502);
+    assert.equal(JSON.parse(res.body).error.code, 'upstream_unavailable');
+  });
+});
+
 describe('Explicit route bindings', () => {
   it('binds every public route to the shared gateway handler', async () => {
     const routes = ['auth/session.js', 'auth/login.js', 'auth/logout.js', 'tenders.js', '[...path].js'];

@@ -1,4 +1,4 @@
-export type ApiStatus = 'loading' | 'ready' | 'unavailable' | 'invalid' | 'unauthorized' | 'not_configured';
+export type ApiStatus = 'loading' | 'waking' | 'ready' | 'unavailable' | 'invalid' | 'unauthorized' | 'not_configured';
 export type Tender = { id: string; title: string; reference: string; deadline?: string | null; created_at?: string; status?: string };
 export type DocumentRecord = { id: string; title: string; version?: string; status?: string };
 export type Requirement = { id: string; text: string; category?: string; mandatory?: boolean; status?: string };
@@ -22,6 +22,56 @@ export function statusForApiError(error: unknown): ApiStatus {
   if (error.code === 'AUTH_REQUIRED') return 'unauthorized';
   if (error.code === 'INVALID_RESPONSE') return 'invalid';
   return 'unavailable';
+}
+
+/**
+ * A failure that is consistent with a sleeping records host rather than a
+ * broken one: no answer in time, no connection, or a gateway 502/503/504 while
+ * the upstream instance boots. Free compute plans stop an idle service, so the
+ * first request after a quiet period can legitimately fail this way.
+ */
+export function isStartupRetryable(error: unknown): boolean {
+  if (!(error instanceof ApiError)) return false;
+  if (error.code === 'TIMEOUT' || error.code === 'NETWORK_ERROR') return true;
+  return error.code === 'HTTP_ERROR' && (error.status === 502 || error.status === 503 || error.status === 504);
+}
+
+/**
+ * Per-attempt budgets for the register load. The first attempt fails fast so a
+ * warm service feels instant; the later, longer attempts cover a cold start.
+ * The gateway holds an upstream request for up to 50s, so the second budget
+ * stays under that ceiling.
+ */
+export const WAKE_BUDGETS_MS = [12_000, 45_000, 30_000];
+
+export type WakeOptions = { onWake?: (attempt: number) => void; budgets?: number[] };
+
+/**
+ * Treat a cold-start failure as "try again" instead of "the service is
+ * broken". `onWake` fires before each retry so the caller can explain the
+ * wait. A real error (401, 404, malformed payload) is thrown at once and is
+ * never retried.
+ */
+async function withWakeup<T>(run: (timeoutMs: number) => Promise<T>, { onWake, budgets = WAKE_BUDGETS_MS }: WakeOptions = {}): Promise<T> {
+  if (budgets.length === 0) throw new ApiError('API_NOT_CONFIGURED', 'API_NOT_CONFIGURED');
+  let attempt = 0;
+  for (;;) {
+    try {
+      return await run(budgets[attempt]);
+    } catch (error) {
+      if (!isStartupRetryable(error) || attempt >= budgets.length - 1) throw error;
+      attempt += 1;
+      onWake?.(attempt);
+    }
+  }
+}
+
+export function loadTendersWithWakeup(apiBase = base, options: WakeOptions = {}): Promise<Tender[]> {
+  return withWakeup((timeoutMs) => loadTenders(apiBase, timeoutMs), options);
+}
+
+export function loadTenderWithWakeup(id: string, apiBase = base, options: WakeOptions = {}): Promise<Tender> {
+  return withWakeup((timeoutMs) => loadTender(id, apiBase, timeoutMs), options);
 }
 
 function endpoint(path: string, apiBase?: string): string {
@@ -91,8 +141,8 @@ function parseTender(value: unknown): Tender[] {
   return rows as Tender[];
 }
 
-export async function loadTenders(apiBase = base): Promise<Tender[]> {
-  return parseTender(await request<unknown>('/api/tenders', apiBase));
+export async function loadTenders(apiBase = base, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<Tender[]> {
+  return parseTender(await request<unknown>('/api/tenders', apiBase, {}, timeoutMs));
 }
 
 /**
@@ -102,28 +152,36 @@ export async function loadTenders(apiBase = base): Promise<Tender[]> {
  * the nested function, so a routing 404 falls back to reading the register and
  * picking the record out of it. Any other failure is reported as-is.
  */
-export async function loadTender(id: string, apiBase = base): Promise<Tender> {
+export async function loadTender(id: string, apiBase = base, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<Tender> {
   if (!id) throw new ApiError('INVALID_RESPONSE', 'A tender id is required.');
   try {
-    const result = await request<unknown>(`/api/tenders/${encodeURIComponent(id)}`, apiBase);
+    const result = await request<unknown>(`/api/tenders/${encodeURIComponent(id)}`, apiBase, {}, timeoutMs);
     if (!isTender(result)) throw new ApiError('INVALID_RESPONSE', 'The service returned an invalid tender record.');
     return result;
   } catch (error) {
     const routeless = error instanceof ApiError && error.status === 404;
     if (!routeless) throw error;
-    const rows = await loadTenders(apiBase);
+    const rows = await loadTenders(apiBase, timeoutMs);
     const found = rows.find((row) => row.id === id);
     if (!found) throw new ApiError('HTTP_ERROR', 'No tender record matches this identifier.', 404);
     return found;
   }
 }
 
+/**
+ * Registration is a single attempt on purpose: it is not idempotent, so a
+ * blind retry could create a duplicate record. The budget is long enough to
+ * absorb a cold start, and a timeout tells the visitor to check the register
+ * before submitting again.
+ */
+export const REGISTRATION_TIMEOUT_MS = 45_000;
+
 export async function createTender(input: { title: string; reference: string; deadline?: string }, apiBase = base): Promise<Tender> {
   const result = await request<unknown>('/api/tenders', apiBase, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
-  });
+  }, REGISTRATION_TIMEOUT_MS);
   if (!isTender(result)) throw new ApiError('INVALID_RESPONSE', 'The service returned an invalid tender record.');
   return result;
 }

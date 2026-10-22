@@ -20,6 +20,9 @@ export default function TenderRecordList({ tenders, query, onOpen }: Props) {
         <p>{query
           ? 'Try a different title or reference.'
           : 'This workspace has no tender records yet. Register a real tender to start its source and review record.'}</p>
+        {!query && <small className="empty-note">
+          Records are held by the records service itself. This deployment runs without a persistent disk, so a service restart clears the register. An empty list after idle time is expected, not a fault.
+        </small>}
         {!query && <button className="button dark compact" onClick={() => onOpen('/app/tenders/new')}>
           <Plus size={15} /> Register a tender <ArrowRight size={14} />
         </button>}
