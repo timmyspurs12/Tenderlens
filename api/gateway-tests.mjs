@@ -2,7 +2,7 @@ import { Buffer } from 'node:buffer';
 import process from 'node:process';
 import { afterEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import handler, { __test } from './[...path].js';
+import handler, { __test } from './_gateway.js';
 
 const envKeys = ['TENDERLENS_PUBLIC_ORIGIN', 'TENDERLENS_GATEWAY_PASSWORD', 'TENDERLENS_SESSION_SECRET', 'TENDERLENS_BACKEND_URL', 'TENDERLENS_API_TOKEN'];
 const original = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
@@ -100,5 +100,15 @@ describe('Vercel same-origin workspace gateway', () => {
     assert.equal(deniedPath.statusCode, 404);
     assert.equal(__test.ALLOWED_BACKEND_PATH.test('/api/tenders/123/requirements'), true);
     assert.equal(__test.ALLOWED_BACKEND_PATH.test('/api/admin'), false);
+  });
+});
+
+describe('explicit route bindings', () => {
+  it('binds every public route to the shared gateway handler', async () => {
+    const routes = ['auth/session.js', 'auth/login.js', 'auth/logout.js', 'tenders.js', '[...path].js'];
+    for (const route of routes) {
+      const mod = await import(`./${route}`);
+      assert.equal(mod.default, handler, `${route} must export the shared handler`);
+    }
   });
 });

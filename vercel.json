@@ -3,11 +3,25 @@
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
   "rewrites": [
-    { "source": "/app", "destination": "/index.html" },
-    { "source": "/app/:path*", "destination": "/index.html" }
+    {
+      "source": "/app",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/app/:path*",
+      "destination": "/index.html"
+    }
   ],
   "functions": {
-    "api/[...path].js": { "maxDuration": 60 },
+    "api/[...path].js": {
+      "maxDuration": 60
+    },
+    "api/tenders.js": {
+      "maxDuration": 60
+    },
+    "api/auth/*.js": {
+      "maxDuration": 60
+    },
     "api/genlayer.js": {
       "maxDuration": 60,
       "includeFiles": "tests/genlayer_direct/contracts/**"
@@ -16,7 +30,12 @@
   "headers": [
     {
       "source": "/api/(.*)",
-      "headers": [{ "key": "Cache-Control", "value": "no-store" }]
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-store"
+        }
+      ]
     }
   ]
 }
