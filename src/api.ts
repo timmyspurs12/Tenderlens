@@ -95,24 +95,6 @@ export async function loadTenders(apiBase = base): Promise<Tender[]> {
   return parseTender(await request<unknown>('/api/tenders', apiBase));
 }
 
-export async function checkGatewaySession(apiBase = base): Promise<void> {
-  const result = await request<unknown>('/api/auth/session', apiBase);
-  if (!isRecord(result) || result.authenticated !== true) {
-    throw new ApiError('INVALID_RESPONSE', 'The gateway did not confirm an authenticated session.');
-  }
-}
-
-export async function signIn(password: string, apiBase = base): Promise<void> {
-  const result = await request<unknown>('/api/auth/login', apiBase, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ password }),
-  });
-  if (!isRecord(result) || result.authenticated !== true) {
-    throw new ApiError('INVALID_RESPONSE', 'The gateway did not confirm sign-in.');
-  }
-}
-
 export async function createTender(input: { title: string; reference: string; deadline?: string }, apiBase = base): Promise<Tender> {
   const result = await request<unknown>('/api/tenders', apiBase, {
     method: 'POST',
