@@ -1,0 +1,42 @@
+{
+  "schema_version": "tenderlens.genlayer-status.v1",
+  "outcome": "probe_reachable",
+  "checked_at": "2026-10-22T13:44:37.141Z",
+  "configured": true,
+  "read_only": true,
+  "network": "studionet",
+  "requested_network": "studionet",
+  "expected_chain_id": 61999,
+  "observed_chain_id": 61999,
+  "chain_identity_verified": true,
+  "endpoint": "https://studio.genlayer.com/api",
+  "endpoint_pinned": true,
+  "sdk_version": null,
+  "reachable": true,
+  "block_number": 1792676677,
+  "contract": {
+    "address": "0x481d38ede6aC854b13F3b677bc31FeCEB9214126",
+    "code_present": true,
+    "lifecycle_status": "evaluated",
+    "result": {
+      "overall_status": "inconclusive",
+      "requirement_count": 1,
+      "unresolved_count": 1,
+      "disclaimer": "Evidence interpretation only; not legal advice and not an automatic procurement award."
+    },
+    "result_error": null,
+    "result_diagnostics": {
+      "type": "string",
+      "length": 916
+    },
+    "probe_submission": true,
+    "explorer_url": "https://explorer-studio.genlayer.com/address/0x481d38ede6aC854b13F3b677bc31FeCEB9214126"
+  },
+  "deployment": {
+    "enabled": false,
+    "signer_configured": false,
+    "redeploy_allowed": false,
+    "broadcast_authorized": false
+  },
+  "error": null
+}
