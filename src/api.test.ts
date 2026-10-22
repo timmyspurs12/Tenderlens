@@ -84,6 +84,23 @@ describe('workspace API client', () => {
     expect(fetchMock.mock.calls[0][0]).toBe('https://records.example/api/tenders/tender-1');
   });
 
+  it('falls back to the register when the single-record route is not bound', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ error: { code: 'not_found' } }, 404))
+      .mockResolvedValueOnce(jsonResponse({ items: [record, { id: 'other', title: 'B', reference: 'R2' }] }));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(loadTender('tender-1', 'https://records.example')).resolves.toEqual(record);
+    expect(fetchMock.mock.calls[1][0]).toBe('https://records.example/api/tenders');
+  });
+
+  it('reports a missing record when neither route returns it', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ error: { code: 'not_found' } }, 404))
+      .mockResolvedValueOnce(jsonResponse({ items: [] }));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(loadTender('tender-9', 'https://records.example')).rejects.toMatchObject({ status: 404 });
+  });
+
   it('encodes the id and rejects a malformed single-tender payload', async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ id: 'x' }));
     vi.stubGlobal('fetch', fetchMock);

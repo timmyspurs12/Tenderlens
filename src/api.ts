@@ -95,12 +95,27 @@ export async function loadTenders(apiBase = base): Promise<Tender[]> {
   return parseTender(await request<unknown>('/api/tenders', apiBase));
 }
 
-/** Load one tender record. The gateway allowlists GET /api/tenders/<id>. */
+/**
+ * Load one tender record.
+ *
+ * The single-record route is the intended path, but a deployment may not bind
+ * the nested function, so a routing 404 falls back to reading the register and
+ * picking the record out of it. Any other failure is reported as-is.
+ */
 export async function loadTender(id: string, apiBase = base): Promise<Tender> {
   if (!id) throw new ApiError('INVALID_RESPONSE', 'A tender id is required.');
-  const result = await request<unknown>(`/api/tenders/${encodeURIComponent(id)}`, apiBase);
-  if (!isTender(result)) throw new ApiError('INVALID_RESPONSE', 'The service returned an invalid tender record.');
-  return result;
+  try {
+    const result = await request<unknown>(`/api/tenders/${encodeURIComponent(id)}`, apiBase);
+    if (!isTender(result)) throw new ApiError('INVALID_RESPONSE', 'The service returned an invalid tender record.');
+    return result;
+  } catch (error) {
+    const routeless = error instanceof ApiError && error.status === 404;
+    if (!routeless) throw error;
+    const rows = await loadTenders(apiBase);
+    const found = rows.find((row) => row.id === id);
+    if (!found) throw new ApiError('HTTP_ERROR', 'No tender record matches this identifier.', 404);
+    return found;
+  }
 }
 
 export async function createTender(input: { title: string; reference: string; deadline?: string }, apiBase = base): Promise<Tender> {
