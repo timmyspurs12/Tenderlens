@@ -135,7 +135,8 @@ only tender and evaluation-request paths.
 ## Production verification (2026-10-22T13:15Z)
 
 Checked against the production alias `https://tenderlens-lilac.vercel.app` after
-the routing fix (`fd0ae9c`, deployment promoted to production):
+the routing fix (commit `17b0756`, deployment
+`dpl_2c7ECDTKK8iDr8dDCHDcGe1MdjU9`, `READY`/`PROMOTED`, 6 functions):
 
 | Request | Result |
 | --- | --- |
@@ -143,6 +144,7 @@ the routing fix (`fd0ae9c`, deployment promoted to production):
 | `GET /api/auth/session` | `401` — `{"error":{"code":"unauthorized", …}}` (previously the SPA HTML) |
 | `GET /api/auth/login` | `405` — `{"error":{"code":"method_not_allowed","message":"Use POST."}}` |
 | `GET /api/tenders` | `401` — workspace sign-in still required |
+| `GET /api/gateway-tests` | `404` from the gateway — the test suites are no longer deployed as endpoints |
 
 The built client bundle contains `/api/genlayer`, the
 `tenderlens.genlayer-status.v1` schema check, and the live-status copy, and no
