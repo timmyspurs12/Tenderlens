@@ -14,6 +14,12 @@ on:
         default: studionet
         type: choice
         options: [studionet, testnetBradbury]
+      mode:
+        description: What to do against the configured contract
+        required: true
+        default: deploy
+        type: choice
+        options: [deploy, evaluate, probe]
       confirm:
         description: Type "deploy" to confirm a real transaction
         required: true
@@ -45,19 +51,44 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Confirm the request marker
-        if: github.event_name == 'push'
-        run: |
-          grep -q '^confirm: deploy$' .github/deploy-requests/genlayer-deploy.yml \
-            || { echo "Request marker does not confirm a deployment."; exit 1; }
-          mode=$(sed -n 's/^mode: *//p' .github/deploy-requests/genlayer-deploy.yml | head -1)
-          echo "GENLAYER_DEPLOY_MODE=${mode:-deploy}" >> "$GITHUB_ENV"
-
-      - name: Deploy and verify
+      - name: Resolve the deployment request
+        id: request
         env:
-          GENLAYER_DEPLOY_CONFIRM: ${{ github.event_name == 'push' && 'deploy' || inputs.confirm }}
-          TENDERLENS_GENLAYER_NETWORK: ${{ github.event_name == 'push' && 'studionet' || inputs.network }}
+          INPUT_MODE: ${{ inputs.mode }}
+          INPUT_NETWORK: ${{ inputs.network }}
+          INPUT_CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            grep -q '^confirm: deploy$' .github/deploy-requests/genlayer-deploy.yml \
+              || { echo "Request marker does not confirm a deployment."; exit 1; }
+            mode=$(sed -n 's/^mode: *//p' .github/deploy-requests/genlayer-deploy.yml | head -1)
+            network=studionet
+            confirm=deploy
+          else
+            mode="$INPUT_MODE"; network="$INPUT_NETWORK"; confirm="$INPUT_CONFIRM"
+          fi
+          case "${mode:-deploy}" in
+            deploy|evaluate|probe) ;;
+            *) echo "Unknown mode: ${mode}"; exit 1 ;;
+          esac
+          {
+            echo "mode=${mode:-deploy}"
+            echo "network=${network:-studionet}"
+            echo "confirm=${confirm}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Deploy, evaluate or probe
+        env:
+          GENLAYER_DEPLOY_CONFIRM: ${{ steps.request.outputs.confirm }}
+          GENLAYER_DEPLOY_MODE: ${{ steps.request.outputs.mode }}
+          TENDERLENS_GENLAYER_NETWORK: ${{ steps.request.outputs.network }}
           TENDERLENS_GENLAYER_FINALITY_WAIT_MS: "180000"
+          # Evaluate mode reads the deployed address from the repository
+          # variables so the workflow cannot silently target a different contract.
+          TENDERLENS_GENLAYER_CONTRACT_ADDRESS: ${{ steps.request.outputs.mode == 'evaluate' && vars.GENLAYER_CONTRACT_ADDRESS || '' }}
+          # Only an explicit evaluate request may broadcast; deploy and probe stay
+          # read-only or construction-only.
+          TENDERLENS_GENLAYER_BROADCAST_AUTHORIZED: ${{ steps.request.outputs.mode == 'evaluate' && '1' || '' }}
           # Optional. Without it the job uses an ephemeral, unfunded testnet key
           # and reports only its address. Never commit a key to this repository.
           TENDERLENS_GENLAYER_PRIVATE_KEY: ${{ secrets.GENLAYER_PRIVATE_KEY }}
@@ -79,7 +110,9 @@ jobs:
         run: |
           mkdir -p deployments
           stamp=$(date -u +%Y%m%dT%H%M%SZ)
-          target="deployments/${TENDERLENS_GENLAYER_NETWORK:-studionet}-${stamp}.json"
+          prefix=""
+          [ "${GENLAYER_DEPLOY_MODE:-deploy}" = "evaluate" ] && prefix="evaluation-"
+          target="deployments/${prefix}${TENDERLENS_GENLAYER_NETWORK:-studionet}-${stamp}.json"
           if [ -f deployment.json ]; then
             cp deployment.json "$target"
           else

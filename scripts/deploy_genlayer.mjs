@@ -10,7 +10,7 @@
  */
 import { appendFileSync, writeFileSync } from 'node:fs';
 import process from 'node:process';
-import { buildProbeSubmission, deployGenLayerContract, readGenLayerStatus } from '../api/_genlayer.js';
+import { buildProbeSubmission, deployGenLayerContract, readGenLayerStatus, submitGenLayerEvaluation } from '../api/_genlayer.js';
 
 const network = process.env.TENDERLENS_GENLAYER_NETWORK || 'studionet';
 const confirmation = process.env.GENLAYER_DEPLOY_CONFIRM || '';
@@ -27,6 +27,35 @@ if (mode === 'probe') {
   const status = await readGenLayerStatus();
   console.log(JSON.stringify(status, null, 2));
   process.exit(status.reachable ? 0 : 3);
+}
+
+// Asking the validators to interpret the submission the contract already
+// holds. This is a real broadcast, so it needs the server-side authorization
+// flag; without it the connector refuses before any key is used.
+if (mode === 'evaluate') {
+  process.env.TENDERLENS_GENLAYER_NETWORK = network;
+  process.env.TENDERLENS_GENLAYER_BROADCAST_AUTHORIZED = process.env.TENDERLENS_GENLAYER_BROADCAST_AUTHORIZED || '1';
+  process.env.TENDERLENS_GENLAYER_FINALITY_WAIT_MS = process.env.TENDERLENS_GENLAYER_FINALITY_WAIT_MS || '180000';
+  let evaluation;
+  try {
+    evaluation = await submitGenLayerEvaluation({ env: process.env });
+  } catch (error) {
+    const failure = {
+      schema_version: 'tenderlens.genlayer-evaluation.v1',
+      outcome: 'error',
+      network,
+      checked_at: new Date().toISOString(),
+      contract_address: process.env.TENDERLENS_GENLAYER_CONTRACT_ADDRESS || null,
+      code: error?.code ?? 'evaluation_failed',
+      hint: error?.hint ?? String(error?.message ?? error).slice(0, 400),
+    };
+    writeFileSync('deployment.json', `${JSON.stringify(failure, null, 2)}\n`);
+    console.error(JSON.stringify(failure, null, 2));
+    process.exit(1);
+  }
+  writeFileSync('deployment.json', `${JSON.stringify(evaluation, null, 2)}\n`);
+  console.log(JSON.stringify(evaluation, null, 2));
+  process.exit(evaluation.outcome === 'finalized' ? 0 : 2);
 }
 
 process.env.TENDERLENS_GENLAYER_NETWORK = network;

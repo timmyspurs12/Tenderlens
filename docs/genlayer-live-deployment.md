@@ -104,6 +104,39 @@ Expected shape (values change over time):
 `contract.result: null` is correct: the contract is deployed and holds no
 evaluation result yet. The UI renders that as an absence, not as an outcome.
 
+## Running the on-chain evaluation
+
+The contract stores its submission immutably at construction, so an evaluation
+can only interpret what is already on chain. It exposes one write,
+`evaluate()`, which requires `lifecycle_status == "prepared"` and then records
+the consensus result; it has no sender or owner check, so any funded or unfunded
+key can call it — the gate is the workflow, not the contract.
+
+Studionet is gasless: the deploy transaction was signed by an ephemeral key with
+a zero balance and still reached `FINALIZED`. Funding the signer with GEN is
+therefore optional on 61999; the public faucet
+(`testnet-faucet.genlayer.foundation`) serves Asimov/Bradbury only and requires
+0.01 ETH on mainnet, so claiming there does not change a Studionet balance.
+
+To evaluate, run the `GenLayer deployment` workflow with `mode: evaluate`
+(manual dispatch) or set `mode: evaluate` in
+`.github/deploy-requests/genlayer-deploy.yml` and commit it. The workflow:
+
+1. resolves `GENLAYER_CONTRACT_ADDRESS` from the repository variable and passes
+   it as `TENDERLENS_GENLAYER_CONTRACT_ADDRESS` — it never guesses the target;
+2. sets `TENDERLENS_GENLAYER_BROADCAST_AUTHORIZED=1` **only** for evaluate
+   requests, so deploy and probe runs stay non-broadcasting;
+3. signs with `GENLAYER_PRIVATE_KEY` (repository secret, never in the repo);
+4. waits for consensus finality and writes
+   `deployments/evaluation-<network>-<stamp>.json` with the transaction hash,
+   result name, lifecycle status after the write, the summarized result and a
+   `probe_submission` flag read back from `get_submission()`.
+
+Without the secret the job fails closed with `signer_not_configured`; without
+the flag it fails with `broadcast_not_authorized`; a contract that is no longer
+`prepared` fails with `contract_not_prepared`. The live read-only status route
+never signs and reports `deployment.broadcast_authorized: false` by default.
+
 ## Production routing note
 
 Vercel's filesystem router did not bind the bracketed catch-all

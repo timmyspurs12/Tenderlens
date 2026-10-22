@@ -6,6 +6,7 @@ import {
   extractContractAddress,
   readConfig,
   readGenLayerStatus,
+  submitGenLayerEvaluation,
   readRuntimeReference,
   validateSubmissionForDeployment,
   NETWORKS,
@@ -35,7 +36,14 @@ function fakeSdk(overrides = {}) {
       if (functionName === 'get_result') {
         return JSON.stringify({ overall_status: 'inconclusive', decisions: [{}, {}], unresolved_requirements: [{}], disclaimer: 'Evidence interpretation only.' });
       }
+      if (functionName === 'get_submission') {
+        return JSON.stringify({ requirements: [{ code: overrides.probe === false ? 'TENDER-1' : 'DEPLOYMENT-PROBE-20260101000000' }] });
+      }
       throw new Error('unknown function');
+    },
+    async writeContract({ address, functionName, args }) {
+      state.written = { address, functionName, args };
+      return '0x' + 'e'.repeat(64);
     },
     async deployContract({ code, args }) {
       state.deployed = { code, args };
@@ -184,6 +192,50 @@ describe('GenLayer deployment gate', () => {
     const record = await deployGenLayerContract({ env: { ...enabledEnv(), TENDERLENS_GENLAYER_FINALITY_WAIT_MS: '5000' }, sdkLoader: async () => sdk });
     assert.equal(record.outcome, 'pending_finality');
     assert.equal(record.status, 'ACCEPTED');
+  });
+});
+
+describe('GenLayer evaluation broadcast', () => {
+  const env = () => ({
+    TENDERLENS_GENLAYER_NETWORK: 'studionet',
+    TENDERLENS_GENLAYER_CONTRACT_ADDRESS: CONTRACT,
+    TENDERLENS_GENLAYER_PRIVATE_KEY: '0x' + 'd'.repeat(64),
+    TENDERLENS_GENLAYER_BROADCAST_AUTHORIZED: '1',
+    TENDERLENS_GENLAYER_FINALITY_WAIT_MS: '5000',
+  });
+
+  it('refuses to broadcast without the server-side authorization flag', async () => {
+    const { TENDERLENS_GENLAYER_BROADCAST_AUTHORIZED, ...unflagged } = env();
+    assert.ok(TENDERLENS_GENLAYER_BROADCAST_AUTHORIZED);
+    await assert.rejects(
+      submitGenLayerEvaluation({ env: unflagged, sdkLoader: async () => fakeSdk() }),
+      (error) => error.code === 'broadcast_not_authorized',
+    );
+  });
+
+  it('refuses to evaluate a contract that is not prepared', async () => {
+    await assert.rejects(
+      submitGenLayerEvaluation({ env: env(), sdkLoader: async () => fakeSdk({ lifecycle: 'evaluated' }) }),
+      (error) => error.code === 'contract_not_prepared',
+    );
+  });
+
+  it('records a finalized consensus result and labels the probe payload', async () => {
+    const record = await submitGenLayerEvaluation({ env: env(), sdkLoader: async () => fakeSdk() });
+    assert.equal(record.outcome, 'finalized');
+    assert.equal(record.contract_address, CONTRACT);
+    assert.equal(record.transaction_hash, '0x' + 'e'.repeat(64));
+    assert.equal(record.result.overall_status, 'inconclusive');
+    assert.equal(record.result.requirement_count, 2);
+    assert.equal(record.probe_submission, true);
+    assert.equal(record.lifecycle_status, 'prepared');
+  });
+
+  it('reports the on-chain probe flag in the public status document', async () => {
+    const status = await readGenLayerStatus({ env: { TENDERLENS_GENLAYER_CONTRACT_ADDRESS: CONTRACT }, sdkLoader: async () => fakeSdk() });
+    assert.equal(status.contract.probe_submission, true);
+    const tendered = await readGenLayerStatus({ env: { TENDERLENS_GENLAYER_CONTRACT_ADDRESS: CONTRACT }, sdkLoader: async () => fakeSdk({ probe: false }) });
+    assert.equal(tendered.contract.probe_submission, false);
   });
 });
 

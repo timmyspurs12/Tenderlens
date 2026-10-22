@@ -19,6 +19,7 @@ import { Buffer } from 'node:buffer';
 
 export const STATUS_SCHEMA = 'tenderlens.genlayer-status.v1';
 export const DEPLOYMENT_SCHEMA = 'tenderlens.genlayer-deployment.v1';
+export const EVALUATION_SCHEMA = 'tenderlens.genlayer-evaluation.v1';
 export const PINNED_RUNTIME = 'py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6';
 export const RUNTIME_PATTERN = /^py-genlayer:[0-9a-z]{52}$/;
 export const CONTRACT_PATH = 'tests/genlayer_direct/contracts/procurement_evaluation.py';
@@ -64,6 +65,7 @@ export function readConfig(env = process.env) {
     addressInvalid: Boolean(address && !ADDRESS.test(address)),
     hasPrivateKey: Boolean(privateKey && /^(?:0x)?[0-9a-fA-F]{64}$/.test(privateKey)),
     deployEnabled: envValue(env, 'TENDERLENS_GENLAYER_DEPLOY_ENABLED') === '1',
+    broadcastAuthorized: envValue(env, 'TENDERLENS_GENLAYER_BROADCAST_AUTHORIZED') === '1',
     allowRedeploy: envValue(env, 'TENDERLENS_GENLAYER_ALLOW_REDEPLOY') === '1',
     maxFinalizeMs: Math.min(Math.max(Number.parseInt(envValue(env, 'TENDERLENS_GENLAYER_FINALITY_WAIT_MS') || '40000', 10) || 40000, 5000), 240000),
   };
@@ -183,6 +185,23 @@ async function loadSdk() {
   }
 }
 
+
+function summarizeResult(raw) {
+  const text = typeof raw === 'string' ? raw : String(raw ?? '');
+  if (!text) return null;
+  try {
+    const parsed = JSON.parse(text);
+    return {
+      overall_status: typeof parsed.overall_status === 'string' ? parsed.overall_status : null,
+      requirement_count: Array.isArray(parsed.decisions) ? parsed.decisions.length : null,
+      unresolved_count: Array.isArray(parsed.unresolved_requirements) ? parsed.unresolved_requirements.length : null,
+      disclaimer: typeof parsed.disclaimer === 'string' ? parsed.disclaimer : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 async function readClientStatus(client, config) {
   const chainId = Number(await client.getChainId());
   if (chainId !== config.pinned.chainId) throw new GenLayerError('chain_identity_mismatch');
@@ -200,31 +219,23 @@ async function readClientStatus(client, config) {
     block_number: Number.isFinite(blockNumber) ? blockNumber : null,
   };
   if (!config.address) {
-    return { ...summary, contract: { address: null, code_present: false, lifecycle_status: null, explorer_url: null } };
+    return { ...summary, contract: { address: null, code_present: false, lifecycle_status: null, result: null, probe_submission: false, explorer_url: null } };
   }
   const codePresent = typeof code === 'string' ? code.trim().length > 0 : Boolean(code);
   let lifecycle = null;
   let result = null;
+  let probeSubmission = false;
   if (codePresent) {
-    const [rawLifecycle, rawResult] = await Promise.all([
+    const [rawLifecycle, rawResult, rawSubmission] = await Promise.all([
       client.readContract({ address: config.address, functionName: 'get_lifecycle_status', args: [] }).catch(() => null),
       client.readContract({ address: config.address, functionName: 'get_result', args: [] }).catch(() => null),
+      client.readContract({ address: config.address, functionName: 'get_submission', args: [] }).catch(() => null),
     ]);
     lifecycle = typeof rawLifecycle === 'string' ? rawLifecycle : rawLifecycle == null ? null : String(rawLifecycle);
-    try {
-      const text = typeof rawResult === 'string' ? rawResult : String(rawResult ?? '');
-      if (text) {
-        const parsed = JSON.parse(text);
-        result = {
-          overall_status: typeof parsed.overall_status === 'string' ? parsed.overall_status : null,
-          requirement_count: Array.isArray(parsed.decisions) ? parsed.decisions.length : null,
-          unresolved_count: Array.isArray(parsed.unresolved_requirements) ? parsed.unresolved_requirements.length : null,
-          disclaimer: typeof parsed.disclaimer === 'string' ? parsed.disclaimer : null,
-        };
-      }
-    } catch {
-      result = null;
-    }
+    result = summarizeResult(rawResult);
+    // The on-chain submission is immutable, so the only honest way to show a
+    // result is to say whether it was computed from the labelled probe payload.
+    probeSubmission = typeof rawSubmission === 'string' && rawSubmission.includes('DEPLOYMENT-PROBE-');
   }
   return {
     ...summary,
@@ -233,6 +244,7 @@ async function readClientStatus(client, config) {
       code_present: codePresent,
       lifecycle_status: lifecycle,
       result,
+      probe_submission: probeSubmission,
       explorer_url: config.pinned.explorer ? `${config.pinned.explorer}/address/${config.address}` : null,
     },
   };
@@ -256,11 +268,12 @@ export async function readGenLayerStatus({ env = process.env, sdkLoader = loadSd
     sdk_version: null,
     reachable: false,
     block_number: null,
-    contract: { address: config.address, code_present: false, lifecycle_status: null, result: null, explorer_url: null },
+    contract: { address: config.address, code_present: false, lifecycle_status: null, result: null, probe_submission: false, explorer_url: null },
     deployment: {
       enabled: config.deployEnabled,
       signer_configured: config.hasPrivateKey,
       redeploy_allowed: config.allowRedeploy,
+      broadcast_authorized: config.broadcastAuthorized,
     },
     error: null,
   };
@@ -424,5 +437,95 @@ export async function deployGenLayerContract({ env = process.env, submission = n
     digest_matches: candidate.digestMatches,
     probe_submission: !submission,
     explorer_url: config.pinned.explorer ? `${config.pinned.explorer}/address/${address}` : null,
+  };
+}
+
+/**
+ * Broadcast the single `evaluate()` write against an already-deployed,
+ * `prepared` contract and wait for consensus finality.
+ *
+ * Guard rails mirror the deploy path: a pinned network/endpoint, a server-only
+ * signer key, and the explicit server-side broadcast flag. The contract stores
+ * its submission immutably, so this never invents new input — it only asks the
+ * validators to interpret what the constructor already holds.
+ */
+export async function submitGenLayerEvaluation({ env = process.env, sdkLoader = loadSdk } = {}) {
+  const config = readConfig(env);
+  if (!config.network) throw new GenLayerError('unsupported_network');
+  if (config.addressInvalid) throw new GenLayerError('invalid_contract_address', 'TENDERLENS_GENLAYER_CONTRACT_ADDRESS must be a 20-byte hex address.');
+  if (!config.address) throw new GenLayerError('contract_address_missing', 'TENDERLENS_GENLAYER_CONTRACT_ADDRESS must point at the reviewed contract.');
+  if (!config.broadcastAuthorized) throw new GenLayerError('broadcast_not_authorized', 'Set the server-side TENDERLENS_GENLAYER_BROADCAST_AUTHORIZED=1 flag to allow a broadcast.');
+  if (!config.hasPrivateKey) throw new GenLayerError('signer_not_configured', 'A server-only TENDERLENS_GENLAYER_PRIVATE_KEY is required to sign.');
+  if (config.endpointOverride && config.endpointOverride !== config.pinned.endpoint) throw new GenLayerError('rpc_endpoint_not_pinned');
+
+  const sdk = await sdkLoader();
+  const chain = assertSdkDefinition(sdk, config.network);
+  const privateKey = envValue(env, 'TENDERLENS_GENLAYER_PRIVATE_KEY');
+  let account;
+  try {
+    account = sdk.createAccount(privateKey.startsWith('0x') ? privateKey : `0x${privateKey}`);
+  } catch {
+    throw new GenLayerError('invalid_signer_key');
+  }
+  const client = sdk.createClient({ chain, account });
+
+  const readView = async (functionName) => {
+    const raw = await client.readContract({ address: config.address, functionName, args: [] });
+    return typeof raw === 'string' ? raw : raw == null ? null : String(raw);
+  };
+
+  let lifecycleBefore;
+  try {
+    lifecycleBefore = await readView('get_lifecycle_status');
+  } catch {
+    lifecycleBefore = null;
+  }
+  if (lifecycleBefore !== 'prepared') {
+    throw new GenLayerError('contract_not_prepared', `The contract lifecycle is ${lifecycleBefore ?? 'unreadable'}; only a prepared contract can be evaluated.`);
+  }
+
+  let hash;
+  try {
+    hash = await client.writeContract({ address: config.address, functionName: 'evaluate', args: [], value: 0n });
+  } catch (error) {
+    const detail = sanitize(error);
+    throw new GenLayerError(detail.code, detail.hint || 'The node rejected the evaluation transaction before consensus was reached.');
+  }
+  if (typeof hash !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(hash)) throw new GenLayerError('evaluation_transaction_reference_invalid');
+
+  const { transaction, status } = await awaitFinality(client, hash, config.maxFinalizeMs);
+  const outcomeDetail = {
+    result_name: transaction?.resultName ?? null,
+    execution_result: transaction?.txExecutionResultName ?? null,
+    receipt: typeof transaction?.txReceipt === 'string' ? transaction.txReceipt : null,
+  };
+  const base = {
+    schema_version: EVALUATION_SCHEMA,
+    checked_at: new Date().toISOString(),
+    network: config.network,
+    chain_id: config.pinned.chainId,
+    contract_address: config.address,
+    transaction_hash: hash,
+    signer_address: account.address,
+    status,
+    lifecycle_status_before: lifecycleBefore,
+    ...outcomeDetail,
+  };
+  if (status !== 'FINALIZED') {
+    return { ...base, outcome: 'pending_finality', lifecycle_status: null, result: null, probe_submission: null };
+  }
+
+  const [lifecycleAfter, rawResult, rawSubmission] = await Promise.all([
+    readView('get_lifecycle_status').catch(() => null),
+    readView('get_result').catch(() => null),
+    readView('get_submission').catch(() => null),
+  ]);
+  return {
+    ...base,
+    outcome: 'finalized',
+    lifecycle_status: lifecycleAfter,
+    result: summarizeResult(rawResult),
+    probe_submission: typeof rawSubmission === 'string' ? rawSubmission.includes('DEPLOYMENT-PROBE-') : null,
+    explorer_url: config.pinned.explorer ? `${config.pinned.explorer}/address/${config.address}` : null,
   };
 }

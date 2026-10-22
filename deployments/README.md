@@ -36,3 +36,19 @@ Field notes:
 
 See [`../docs/genlayer-live-deployment.md`](../docs/genlayer-live-deployment.md)
 for the operator runbook and the production routing note.
+
+## Evaluation records
+
+`evaluation-<network>-<timestamp>.json` follows the same principle for the
+single `evaluate()` write:
+
+- `outcome: finalized` carries `transaction_hash`, `result_name`,
+  `execution_result`, `lifecycle_status` after the write, the summarized on-chain
+  `result`, and `probe_submission` — `true` means the contract's immutable
+  submission is the labelled deployment probe rather than a stored tender
+  snapshot. A probe result is a network/consensus smoke test, not a procurement
+  finding.
+- `outcome: pending_finality` means the write was broadcast but not observed as
+  final; do not treat the lifecycle or result as settled.
+- `outcome: error` carries `code`/`hint` from the fail-closed gate
+  (`broadcast_not_authorized`, `signer_not_configured`, `contract_not_prepared`).

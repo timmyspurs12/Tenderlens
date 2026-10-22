@@ -36,8 +36,10 @@ function GenLayerPanel({status}:{status:GenLayerStatus|'loading'|null}){
     ['Contract address',contract.address||'not configured'],
     ['Contract code',contract.address?(contract.code_present?'present on chain':'not found on chain'):'not queried'],
     ['Lifecycle',contract.lifecycle_status||'not reported'],
+    ['Stored submission',contract.address?(contract.code_present?(contract.probe_submission?'labelled deployment probe (not a tender)':'tender snapshot'):'not read'):'not queried'],
     ['Evaluation result',result?`${result.overall_status||'reported'} · ${result.requirement_count??'—'} requirements · ${result.unresolved_count??'—'} unresolved`:'not reported'],
-    ['Deployment gate',status.deployment.enabled?(status.deployment.signer_configured?'enabled with server-side signer':'enabled but no signer key'):'disabled']
+    ['Deployment gate',status.deployment.enabled?(status.deployment.signer_configured?'enabled with server-side signer':'enabled but no signer key'):'disabled'],
+    ['Evaluation broadcast',status.deployment.broadcast_authorized?'authorized server-side':'disabled']
   ];
   const blockers=status.deployment.blockers||[];
   return <section className="genlayer-panel">

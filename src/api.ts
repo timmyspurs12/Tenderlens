@@ -127,6 +127,7 @@ export type GenLayerContractStatus = {
   address: string | null;
   code_present: boolean;
   lifecycle_status: string | null;
+  probe_submission: boolean;
   result: { overall_status: string | null; requirement_count: number | null; unresolved_count: number | null; disclaimer: string | null } | null;
   explorer_url: string | null;
 };
@@ -145,7 +146,7 @@ export type GenLayerStatus = {
   reachable: boolean;
   block_number: number | null;
   contract: GenLayerContractStatus;
-  deployment: { enabled: boolean; signer_configured: boolean; redeploy_allowed: boolean; blockers: string[] };
+  deployment: { enabled: boolean; signer_configured: boolean; redeploy_allowed: boolean; broadcast_authorized: boolean; blockers: string[] };
   error: { code: string; hint: string | null } | null;
   authenticated: boolean;
 };
@@ -180,6 +181,7 @@ export async function loadGenLayerStatus(apiBase = base): Promise<GenLayerStatus
       address: optionalString(contract.address),
       code_present: contract.code_present === true,
       lifecycle_status: optionalString(contract.lifecycle_status),
+      probe_submission: contract.probe_submission === true,
       result: resultSummary ? {
         overall_status: optionalString(resultSummary.overall_status),
         requirement_count: typeof resultSummary.requirement_count === 'number' ? resultSummary.requirement_count : null,
@@ -192,6 +194,7 @@ export async function loadGenLayerStatus(apiBase = base): Promise<GenLayerStatus
       enabled: deployment.enabled === true,
       signer_configured: deployment.signer_configured === true,
       redeploy_allowed: deployment.redeploy_allowed === true,
+      broadcast_authorized: deployment.broadcast_authorized === true,
       blockers: Array.isArray(deployment.blockers) ? deployment.blockers.filter((item): item is string => typeof item === 'string') : [],
     },
     error,
