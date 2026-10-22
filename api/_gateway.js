@@ -174,7 +174,11 @@ export default async function handler(req, res) {
     return json(res, 200, { authenticated: true, mode: 'public' });
   }
 
-  if (!ALLOWED_BACKEND_PATH.test(path) || !ALLOWED_METHODS.includes(method)) {
+  // Reject encoded separators and dot segments outright: the allowlist is
+  // matched on the raw pathname, so any path whose meaning could change after
+  // upstream decoding must never be forwarded.
+  const ambiguous = /%(?:2e|2f|5c)/i.test(path) || path.includes('\\');
+  if (ambiguous || !ALLOWED_BACKEND_PATH.test(path) || !ALLOWED_METHODS.includes(method)) {
     return json(res, 404, { error: { code: 'not_found', message: 'Route not found.' } });
   }
 

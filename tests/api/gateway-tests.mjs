@@ -56,6 +56,18 @@ afterEach(() => {
 const originalFetch = globalThis.fetch;
 
 describe('Public workspace access', () => {
+  it('refuses encoded path separators and dot segments before forwarding', async () => {
+    configure();
+    const calls = [];
+    globalThis.fetch = async (url) => { calls.push(String(url)); return new globalThis.Response('{}', { status: 200 }); };
+    for (const path of ['/api/tenders/%2e%2e%2fadmin', '/api/tenders/..%2fadmin', '/api/tenders/..%5cadmin', '/api/admin', '/api/tenders/x/../../admin']) {
+      const res = response();
+      await handler(request(path), res);
+      assert.equal(res.statusCode, 404, path);
+    }
+    assert.deepEqual(calls, []);
+  });
+
   it('fails closed when the backend configuration is missing', async () => {
     for (const key of envKeys) delete process.env[key];
     const res = response();
