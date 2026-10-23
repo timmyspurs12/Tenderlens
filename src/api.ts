@@ -1,7 +1,81 @@
 export type ApiStatus = 'loading' | 'waking' | 'ready' | 'unavailable' | 'invalid' | 'unauthorized' | 'not_configured';
 export type Tender = { id: string; title: string; reference: string; deadline?: string | null; created_at?: string; status?: string };
-export type DocumentRecord = { id: string; title: string; version?: string; status?: string };
-export type Requirement = { id: string; text: string; category?: string; mandatory?: boolean; status?: string };
+export type DocumentRecord = {
+  id: string;
+  group_id: string;
+  version: number;
+  filename: string;
+  content_type: string;
+  size: number;
+  sha256: string;
+  supersedes_document_id: string | null;
+  created_at: string;
+};
+export type RequirementCategory = 'eligibility' | 'mandatory_documentation' | 'technical' | 'interpretive';
+export type RequirementKind = 'objective' | 'judgment';
+export type Requirement = {
+  id: string;
+  code: string;
+  text: string;
+  category: RequirementCategory;
+  mandatory: boolean;
+  kind: RequirementKind;
+  created_at: string;
+};
+export type EvidenceProvenance = {
+  document_id: string;
+  document_sha256: string;
+  document_version: number;
+  filename: string;
+  start_byte: number;
+  end_byte: number;
+  retrieved_at: string;
+  integrity_check: string;
+  source_authenticity: string;
+};
+export type EvidenceRecord = {
+  id: string;
+  requirement_id: string | null;
+  document_id: string;
+  document_sha256: string;
+  start_byte: number;
+  end_byte: number;
+  excerpt: string;
+  provenance: EvidenceProvenance;
+  created_at: string;
+};
+export type AmendmentRelationship = 'explicit_replacement' | 'conflicting' | 'clarification' | 'unresolved' | 'none';
+export type AmendmentRecord = {
+  id: string;
+  document_id: string;
+  predecessor_id: string | null;
+  relationship: AmendmentRelationship;
+  comparison_status?: string;
+  sha256?: string;
+  created_at: string;
+};
+export type AggregationPolicy = 'mandatory_gate_optional_advisory_v1' | 'all_requirements_blocking_v1';
+export type EvaluationSnapshotSummary = {
+  id: string;
+  input_sha256: string;
+  created_at: string;
+  status: string;
+};
+export type EvaluationSnapshot = {
+  snapshot_id: string;
+  input_sha256: string;
+  created_at: string;
+  status: string;
+  submission: Record<string, unknown>;
+};
+export type WorkspaceSession = {
+  authenticated: boolean;
+  mode: 'public' | 'owner';
+  owner_sign_in: boolean;
+  can_read: boolean;
+  can_register: boolean;
+  can_write_privileged: boolean;
+};
 
 const configuredBase = (import.meta as ImportMeta & { env: Record<string, string | undefined> }).env.VITE_API_BASE_URL;
 const base = configuredBase?.trim().replace(/\/+$/, '') ?? (import.meta.env.PROD ? '/' : undefined);
@@ -184,6 +258,253 @@ export async function createTender(input: { title: string; reference: string; de
   }, REGISTRATION_TIMEOUT_MS);
   if (!isTender(result)) throw new ApiError('INVALID_RESPONSE', 'The service returned an invalid tender record.');
   return result;
+}
+
+export const MAX_DOCUMENT_UPLOAD_BYTES = 20 * 1024 * 1024;
+const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+const REQUIREMENT_CATEGORIES: RequirementCategory[] = ['eligibility', 'mandatory_documentation', 'technical', 'interpretive'];
+const REQUIREMENT_KINDS: RequirementKind[] = ['objective', 'judgment'];
+const AMENDMENT_RELATIONSHIPS: AmendmentRelationship[] = ['explicit_replacement', 'conflicting', 'clarification', 'unresolved', 'none'];
+const AGGREGATION_POLICIES: AggregationPolicy[] = ['mandatory_gate_optional_advisory_v1', 'all_requirements_blocking_v1'];
+
+function isNullableString(value: unknown): value is string | null {
+  return value === null || typeof value === 'string';
+}
+
+function isDocumentRecord(value: unknown): value is DocumentRecord {
+  return isRecord(value)
+    && typeof value.id === 'string'
+    && typeof value.group_id === 'string'
+    && typeof value.version === 'number'
+    && typeof value.filename === 'string'
+    && typeof value.content_type === 'string'
+    && typeof value.size === 'number'
+    && typeof value.sha256 === 'string'
+    && isNullableString(value.supersedes_document_id)
+    && typeof value.created_at === 'string';
+}
+
+function isRequirement(value: unknown): value is Requirement {
+  return isRecord(value)
+    && typeof value.id === 'string'
+    && typeof value.code === 'string'
+    && typeof value.text === 'string'
+    && REQUIREMENT_CATEGORIES.includes(value.category as RequirementCategory)
+    && typeof value.mandatory === 'boolean'
+    && REQUIREMENT_KINDS.includes(value.kind as RequirementKind)
+    && typeof value.created_at === 'string';
+}
+
+function isEvidenceRecord(value: unknown): value is EvidenceRecord {
+  return isRecord(value)
+    && typeof value.id === 'string'
+    && isNullableString(value.requirement_id)
+    && typeof value.document_id === 'string'
+    && typeof value.document_sha256 === 'string'
+    && typeof value.start_byte === 'number'
+    && typeof value.end_byte === 'number'
+    && typeof value.excerpt === 'string'
+    && isRecord(value.provenance)
+    && typeof value.provenance.document_id === 'string'
+    && typeof value.provenance.document_sha256 === 'string'
+    && typeof value.provenance.document_version === 'number'
+    && typeof value.provenance.filename === 'string'
+    && typeof value.provenance.start_byte === 'number'
+    && typeof value.provenance.end_byte === 'number'
+    && typeof value.provenance.retrieved_at === 'string'
+    && typeof value.provenance.integrity_check === 'string'
+    && typeof value.provenance.source_authenticity === 'string'
+    && typeof value.created_at === 'string';
+}
+
+function isAmendmentRecord(value: unknown): value is AmendmentRecord {
+  return isRecord(value)
+    && typeof value.id === 'string'
+    && typeof value.document_id === 'string'
+    && isNullableString(value.predecessor_id)
+    && AMENDMENT_RELATIONSHIPS.includes(value.relationship as AmendmentRelationship)
+    && typeof value.created_at === 'string';
+}
+
+function parseCollection<T>(value: unknown, valid: (item: unknown) => item is T, label: string): T[] {
+  const items = isRecord(value) ? value.items : null;
+  if (!Array.isArray(items) || !items.every(valid)) {
+    throw new ApiError('INVALID_RESPONSE', `The response did not match the expected ${label} collection schema.`);
+  }
+  return items;
+}
+
+function tenderResource(tenderId: string, resource: string): string {
+  if (!tenderId) throw new ApiError('INVALID_RESPONSE', 'A tender id is required.');
+  return `/api/tenders/${encodeURIComponent(tenderId)}/${resource}`;
+}
+
+export async function loadWorkspaceSession(apiBase = base): Promise<WorkspaceSession> {
+  const value = await request<unknown>('/api/auth/session', apiBase);
+  if (!isRecord(value)
+    || value.authenticated !== true
+    || (value.mode !== 'public' && value.mode !== 'owner')
+    || typeof value.owner_sign_in !== 'boolean'
+    || typeof value.can_read !== 'boolean'
+    || typeof value.can_register !== 'boolean'
+    || typeof value.can_write_privileged !== 'boolean') {
+    throw new ApiError('INVALID_RESPONSE', 'The workspace access response did not match the documented session schema.');
+  }
+  return value as WorkspaceSession;
+}
+
+export async function loginWorkspaceOwner(password: string, apiBase = base): Promise<void> {
+  const value = await request<unknown>('/api/auth/login', apiBase, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password }),
+  });
+  if (!isRecord(value) || value.authenticated !== true || value.mode !== 'owner') {
+    throw new ApiError('INVALID_RESPONSE', 'The workspace did not confirm an owner session.');
+  }
+}
+
+export async function logoutWorkspaceOwner(apiBase = base): Promise<void> {
+  const value = await request<unknown>('/api/auth/logout', apiBase, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+  });
+  if (!isRecord(value) || value.authenticated !== true || value.mode !== 'public') {
+    throw new ApiError('INVALID_RESPONSE', 'The workspace did not confirm the sign-out.');
+  }
+}
+
+export async function loadTenderDocuments(tenderId: string, apiBase = base): Promise<DocumentRecord[]> {
+  const value = await request<unknown>(tenderResource(tenderId, 'documents'), apiBase);
+  return parseCollection(value, isDocumentRecord, 'document');
+}
+
+function documentMime(file: File): string {
+  const extension = file.name.split('.').pop()?.toLowerCase();
+  if (extension === 'txt') return 'text/plain';
+  if (extension === 'pdf') return 'application/pdf';
+  if (extension === 'docx') return DOCX_MIME;
+  throw new ApiError('INVALID_RESPONSE', 'Choose a .txt, .pdf, or .docx source file.');
+}
+
+export async function uploadTenderDocument(
+  tenderId: string,
+  file: File,
+  groupId: string,
+  supersedesDocumentId?: string,
+  apiBase = base,
+): Promise<DocumentRecord> {
+  if (file.size < 1 || file.size > MAX_DOCUMENT_UPLOAD_BYTES) {
+    throw new ApiError('INVALID_RESPONSE', 'Source files must be between 1 byte and 20 MiB.');
+  }
+  if (!groupId.trim() || groupId.trim().length > 120) {
+    throw new ApiError('INVALID_RESPONSE', 'Enter a document group label of at most 120 characters.');
+  }
+  const headers = new Headers({
+    'Content-Type': documentMime(file),
+    'X-Filename': encodeURIComponent(file.name),
+    'X-Document-Group': encodeURIComponent(groupId.trim()),
+  });
+  if (supersedesDocumentId) headers.set('X-Supersedes-Document-Id', supersedesDocumentId);
+  const value = await request<unknown>(tenderResource(tenderId, 'documents'), apiBase, {
+    method: 'POST',
+    headers,
+    body: file,
+  }, REGISTRATION_TIMEOUT_MS);
+  if (!isDocumentRecord(value)) throw new ApiError('INVALID_RESPONSE', 'The service returned an invalid document version.');
+  return value;
+}
+
+export async function loadTenderRequirements(tenderId: string, apiBase = base): Promise<Requirement[]> {
+  const value = await request<unknown>(tenderResource(tenderId, 'requirements'), apiBase);
+  return parseCollection(value, isRequirement, 'requirement');
+}
+
+export async function createTenderRequirement(
+  tenderId: string,
+  input: Omit<Requirement, 'id' | 'created_at'>,
+  apiBase = base,
+): Promise<Requirement> {
+  const value = await request<unknown>(tenderResource(tenderId, 'requirements'), apiBase, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (!isRequirement(value)) throw new ApiError('INVALID_RESPONSE', 'The service returned an invalid requirement.');
+  return value;
+}
+
+export async function loadTenderEvidence(tenderId: string, apiBase = base): Promise<EvidenceRecord[]> {
+  const value = await request<unknown>(tenderResource(tenderId, 'evidence'), apiBase);
+  return parseCollection(value, isEvidenceRecord, 'evidence');
+}
+
+export async function createTenderEvidence(
+  tenderId: string,
+  input: { document_id: string; requirement_id: string | null; start_byte: number; end_byte: number },
+  apiBase = base,
+): Promise<EvidenceRecord> {
+  const value = await request<unknown>(tenderResource(tenderId, 'evidence'), apiBase, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (!isEvidenceRecord(value)) throw new ApiError('INVALID_RESPONSE', 'The service returned invalid evidence provenance.');
+  return value;
+}
+
+export async function loadTenderAmendments(tenderId: string, apiBase = base): Promise<AmendmentRecord[]> {
+  const value = await request<unknown>(tenderResource(tenderId, 'amendments'), apiBase);
+  return parseCollection(value, isAmendmentRecord, 'amendment');
+}
+
+export async function createTenderAmendment(
+  tenderId: string,
+  input: { document_id: string; predecessor_id: string | null; relationship: AmendmentRelationship },
+  apiBase = base,
+): Promise<AmendmentRecord> {
+  const value = await request<unknown>(tenderResource(tenderId, 'amendments'), apiBase, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (!isAmendmentRecord(value)) throw new ApiError('INVALID_RESPONSE', 'The service returned an invalid amendment annotation.');
+  return value;
+}
+
+export async function loadEvaluationSnapshots(tenderId: string, apiBase = base): Promise<EvaluationSnapshotSummary[]> {
+  const value = await request<unknown>(tenderResource(tenderId, 'evaluation-snapshots'), apiBase);
+  return parseCollection(value, (item): item is EvaluationSnapshotSummary => isRecord(item)
+    && typeof item.id === 'string'
+    && typeof item.input_sha256 === 'string'
+    && typeof item.created_at === 'string'
+    && typeof item.status === 'string', 'evaluation snapshot');
+}
+
+export async function prepareEvaluationSnapshot(
+  tenderId: string,
+  evidenceIds: string[],
+  aggregationPolicy: AggregationPolicy,
+  apiBase = base,
+): Promise<EvaluationSnapshot> {
+  if (!AGGREGATION_POLICIES.includes(aggregationPolicy)) {
+    throw new ApiError('INVALID_RESPONSE', 'Choose a supported evaluation aggregation policy.');
+  }
+  const value = await request<unknown>(tenderResource(tenderId, 'evaluation-snapshots'), apiBase, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ evidence_ids: evidenceIds, aggregation_policy: aggregationPolicy }),
+  }, REGISTRATION_TIMEOUT_MS);
+  if (!isRecord(value)
+    || typeof value.snapshot_id !== 'string'
+    || typeof value.input_sha256 !== 'string'
+    || typeof value.created_at !== 'string'
+    || typeof value.status !== 'string'
+    || !isRecord(value.submission)) {
+    throw new ApiError('INVALID_RESPONSE', 'The service returned an invalid evaluation snapshot.');
+  }
+  return value as EvaluationSnapshot;
 }
 
 export type GenLayerContractStatus = {

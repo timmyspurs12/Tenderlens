@@ -31,6 +31,8 @@ CREATE TRIGGER IF NOT EXISTS evidence_no_update BEFORE UPDATE ON evidence BEGIN 
 CREATE TRIGGER IF NOT EXISTS evidence_no_delete BEFORE DELETE ON evidence BEGIN SELECT RAISE(ABORT, 'evidence provenance is immutable'); END;
 CREATE TRIGGER IF NOT EXISTS amendments_no_update BEFORE UPDATE ON amendments BEGIN SELECT RAISE(ABORT, 'amendment annotations are immutable'); END;
 CREATE TRIGGER IF NOT EXISTS amendments_no_delete BEFORE DELETE ON amendments BEGIN SELECT RAISE(ABORT, 'amendment annotations are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS requirements_no_update BEFORE UPDATE ON requirements BEGIN SELECT RAISE(ABORT, 'requirements are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS requirements_no_delete BEFORE DELETE ON requirements BEGIN SELECT RAISE(ABORT, 'requirements are immutable'); END;
 CREATE TRIGGER IF NOT EXISTS evaluation_snapshots_no_update BEFORE UPDATE ON evaluation_snapshots BEGIN SELECT RAISE(ABORT, 'evaluation snapshots are immutable'); END;
 CREATE TRIGGER IF NOT EXISTS evaluation_snapshots_no_delete BEFORE DELETE ON evaluation_snapshots BEGIN SELECT RAISE(ABORT, 'evaluation snapshots are immutable'); END;
 """
@@ -408,9 +410,12 @@ class TenderLensAPI:
         if size>MAX_UPLOAD: return err(413,"file_too_large","Maximum upload size is 20 MiB.")
         mime=e.get("CONTENT_TYPE","").split(";",1)[0].strip().lower()
         if mime not in ALLOWED_MIME: return err(415,"unsupported_media_type","Allowed formats: text/plain, application/pdf, DOCX.")
-        filename=clean_text(e.get("HTTP_X_FILENAME","document"),"X-Filename",180)
-        if any(ord(ch)<32 for ch in filename) or "/" in filename or "\\" in filename: raise ValueError("Filename must be a plain file name")
-        group=clean_text(e.get("HTTP_X_DOCUMENT_GROUP","main"),"X-Document-Group",120)
+        # Browser clients URI-encode these values so Unicode names stay safe in
+        # HTTP headers; decode before validating the stored display values.
+        filename=clean_text(unquote(e.get("HTTP_X_FILENAME","document")),"X-Filename",180)
+        if any(ord(ch)<32 or ord(ch)==127 for ch in filename) or "/" in filename or "\\" in filename: raise ValueError("Filename must be a plain file name")
+        group=clean_text(unquote(e.get("HTTP_X_DOCUMENT_GROUP","main")),"X-Document-Group",120)
+        if any(ord(ch)<32 or ord(ch)==127 for ch in group): raise ValueError("Document group must not contain control characters")
         supersedes=e.get("HTTP_X_SUPERSEDES_DOCUMENT_ID") or None
         if supersedes:
             old=c.execute("SELECT id,group_id FROM documents WHERE id=? AND tender_id=? AND workspace=?",(supersedes,tid,self.workspace)).fetchone()
