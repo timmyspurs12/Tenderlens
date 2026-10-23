@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  ApiError, asArray, createTender, isRecord, isStartupRetryable, loadTender, loadTenderWithWakeup,
-  loadTenders, loadTendersWithWakeup, request, statusForApiError, WAKE_BUDGETS_MS,
+  ApiError, asArray, createTender, createTenderAmendment, createTenderEvidence, createTenderRequirement, isRecord, isStartupRetryable,
+  loadEvaluationSnapshots, loadTender, loadTenderAmendments, loadTenderDocuments, loadTenderEvidence, loadTenderRequirements,
+  loadTenderWithWakeup, loadTenders, loadTendersWithWakeup, loadWorkspaceSession, loginWorkspaceOwner, logoutWorkspaceOwner,
+  prepareEvaluationSnapshot, request, statusForApiError, uploadTenderDocument, WAKE_BUDGETS_MS,
 } from './api';
 
 afterEach(() => {
@@ -175,5 +177,128 @@ describe('workspace API client', () => {
       credentials: 'include',
       body: JSON.stringify({ title: record.title, reference: record.reference }),
     }));
+  });
+
+  it('loads strict source, requirement, evidence, and amendment collections', async () => {
+    const document = {
+      id: 'doc-1', group_id: 'tender-pack', version: 2, filename: 'notice.txt', content_type: 'text/plain',
+      size: 12, sha256: 'a'.repeat(64), supersedes_document_id: 'doc-0', created_at: '2026-10-23T00:00:00Z',
+    };
+    const requirement = {
+      id: 'req-1', code: 'ELIG-01', text: 'Hold a current license.', category: 'eligibility',
+      mandatory: true, kind: 'objective', created_at: '2026-10-23T00:00:00Z',
+    };
+    const evidence = {
+      id: 'evidence-1', requirement_id: 'req-1', document_id: 'doc-1', document_sha256: 'a'.repeat(64),
+      start_byte: 0, end_byte: 6, excerpt: 'License', created_at: '2026-10-23T00:00:00Z',
+      provenance: {
+        document_id: 'doc-1', document_sha256: 'a'.repeat(64), document_version: 2, filename: 'notice.txt',
+        start_byte: 0, end_byte: 6, retrieved_at: '2026-10-23T00:00:00Z', integrity_check: 'sha256_match',
+        source_authenticity: 'not_independently_verified',
+      },
+    };
+    const amendment = {
+      id: 'amendment-1', document_id: 'doc-1', predecessor_id: 'doc-0', relationship: 'explicit_replacement',
+      created_at: '2026-10-23T00:00:00Z',
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ items: [document] }))
+      .mockResolvedValueOnce(jsonResponse({ items: [requirement] }))
+      .mockResolvedValueOnce(jsonResponse({ items: [evidence] }))
+      .mockResolvedValueOnce(jsonResponse({ items: [amendment], comparison_status: 'unavailable_without_verified_comparison_engine' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(loadTenderDocuments('tender-1', 'https://records.example')).resolves.toEqual([document]);
+    await expect(loadTenderRequirements('tender-1', 'https://records.example')).resolves.toEqual([requirement]);
+    await expect(loadTenderEvidence('tender-1', 'https://records.example')).resolves.toEqual([evidence]);
+    await expect(loadTenderAmendments('tender-1', 'https://records.example')).resolves.toEqual([amendment]);
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      'https://records.example/api/tenders/tender-1/documents',
+      'https://records.example/api/tenders/tender-1/requirements',
+      'https://records.example/api/tenders/tender-1/evidence',
+      'https://records.example/api/tenders/tender-1/amendments',
+    ]);
+  });
+
+  it('uses the owner session cookie flow without adding a browser bearer token', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ authenticated: true, mode: 'public', owner_sign_in: true, can_read: true, can_register: true, can_write_privileged: false }))
+      .mockResolvedValueOnce(jsonResponse({ authenticated: true, mode: 'owner' }))
+      .mockResolvedValueOnce(jsonResponse({ authenticated: true, mode: 'public' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(loadWorkspaceSession('https://records.example')).resolves.toMatchObject({ mode: 'public', owner_sign_in: true });
+    await expect(loginWorkspaceOwner('private passphrase', 'https://records.example')).resolves.toBeUndefined();
+    await expect(logoutWorkspaceOwner('https://records.example')).resolves.toBeUndefined();
+    for (const [, options] of fetchMock.mock.calls) {
+      const headers = new Headers(options.headers);
+      expect(options.credentials).toBe('include');
+      expect(headers.has('Authorization')).toBe(false);
+    }
+    expect(fetchMock.mock.calls[1][1].body).toBe(JSON.stringify({ password: 'private passphrase' }));
+  });
+
+  it('uploads raw file bytes with encoded metadata and refuses unsupported files', async () => {
+    const uploaded = {
+      id: 'doc-1', group_id: 'tender pack', version: 1, filename: 'notice café.txt', content_type: 'text/plain',
+      size: 5, sha256: 'b'.repeat(64), supersedes_document_id: null, created_at: '2026-10-23T00:00:00Z',
+    };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(uploaded, 201));
+    vi.stubGlobal('fetch', fetchMock);
+    const file = new File(['hello'], 'notice café.txt', { type: 'text/plain' });
+    await expect(uploadTenderDocument('tender-1', file, 'tender pack', undefined, 'https://records.example')).resolves.toEqual(uploaded);
+    const [url, options] = fetchMock.mock.calls[0];
+    const headers = new Headers(options.headers);
+    expect(url).toBe('https://records.example/api/tenders/tender-1/documents');
+    expect(headers.get('Content-Type')).toBe('text/plain');
+    expect(headers.get('X-Filename')).toBe(encodeURIComponent('notice café.txt'));
+    expect(headers.get('X-Document-Group')).toBe(encodeURIComponent('tender pack'));
+    expect(options.body).toBe(file);
+    expect(options.credentials).toBe('include');
+    await expect(uploadTenderDocument('tender-1', new File(['x'], 'virus.exe'), 'group', undefined, 'https://records.example')).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+  });
+
+  it('writes requirement and evidence records, and prepares snapshots without submission', async () => {
+    const requirement = {
+      id: 'req-1', code: 'ELIG-01', text: 'Hold a license', category: 'eligibility', mandatory: true,
+      kind: 'objective', created_at: '2026-10-23T00:00:00Z',
+    };
+    const evidence = {
+      id: 'ev-1', requirement_id: 'req-1', document_id: 'doc-1', document_sha256: 'c'.repeat(64),
+      start_byte: 0, end_byte: 7, excerpt: 'License', created_at: '2026-10-23T00:00:00Z',
+      provenance: {
+        document_id: 'doc-1', document_sha256: 'c'.repeat(64), document_version: 1, filename: 'notice.txt',
+        start_byte: 0, end_byte: 7, retrieved_at: '2026-10-23T00:00:00Z', integrity_check: 'sha256_match',
+        source_authenticity: 'not_independently_verified',
+      },
+    };
+    const amendment = {
+      id: 'am-1', document_id: 'doc-1', predecessor_id: 'doc-0', relationship: 'clarification', created_at: '2026-10-23T00:00:00Z',
+    };
+    const snapshot = {
+      snapshot_id: 'snapshot-1', input_sha256: 'd'.repeat(64), created_at: '2026-10-23T00:00:00Z',
+      status: 'prepared_not_submitted', submission: { schema_version: 'tenderlens.evaluation-submission.v1' },
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(requirement, 201))
+      .mockResolvedValueOnce(jsonResponse(evidence, 201))
+      .mockResolvedValueOnce(jsonResponse(amendment, 201))
+      .mockResolvedValueOnce(jsonResponse(snapshot, 201))
+      .mockResolvedValueOnce(jsonResponse({ items: [{ id: snapshot.snapshot_id, input_sha256: snapshot.input_sha256, created_at: snapshot.created_at, status: snapshot.status }] }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(createTenderRequirement('tender-1', {
+      code: 'ELIG-01', text: 'Hold a license', category: 'eligibility', mandatory: true, kind: 'objective',
+    }, 'https://records.example')).resolves.toEqual(requirement);
+    await expect(createTenderEvidence('tender-1', {
+      document_id: 'doc-1', requirement_id: 'req-1', start_byte: 0, end_byte: 7,
+    }, 'https://records.example')).resolves.toEqual(evidence);
+    await expect(createTenderAmendment('tender-1', {
+      document_id: 'doc-1', predecessor_id: 'doc-0', relationship: 'clarification',
+    }, 'https://records.example')).resolves.toEqual(amendment);
+    await expect(prepareEvaluationSnapshot('tender-1', ['ev-1'], 'mandatory_gate_optional_advisory_v1', 'https://records.example')).resolves.toEqual(snapshot);
+    await expect(loadEvaluationSnapshots('tender-1', 'https://records.example')).resolves.toMatchObject([{ id: 'snapshot-1', status: 'prepared_not_submitted' }]);
+    expect(fetchMock.mock.calls.map(([, options]) => options.method)).toEqual(['POST', 'POST', 'POST', 'POST', undefined]);
+    expect(fetchMock.mock.calls[3][1].body).toBe(JSON.stringify({ evidence_ids: ['ev-1'], aggregation_policy: 'mandatory_gate_optional_advisory_v1' }));
   });
 });

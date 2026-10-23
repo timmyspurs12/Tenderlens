@@ -79,6 +79,38 @@ class BackendAPITest(unittest.TestCase):
         status,req,_=self.call('POST',f'/api/tenders/{tid}/requirements',{'code':'REQ-1','text':'Review published clause','category':'interpretive','mandatory':True,'kind':'judgment'}); self.assertEqual(status,201)
         status,ev,_=self.call('POST',f'/api/tenders/{tid}/evidence',{'document_id':first['id'],'requirement_id':req['id'],'start_byte':0,'end_byte':9}); self.assertEqual(status,201); self.assertEqual(ev['excerpt'],'Published'); self.assertEqual(ev['provenance']['document_sha256'],first['sha256']); self.assertEqual(ev['provenance']['integrity_check'],'sha256_match'); self.assertEqual(ev['provenance']['source_authenticity'],'not_independently_verified')
         status,rows,_=self.call('GET',f'/api/tenders/{tid}/documents'); self.assertEqual(status,200); self.assertEqual([r['version'] for r in rows['items']],[1,2])
+    def test_upload_decodes_encoded_unicode_metadata_before_storage_and_rejects_encoded_paths(self):
+        tid=self.create_tender()
+        status,record,_=self.call('POST',f'/api/tenders/{tid}/documents',b'Published source.',ctype='text/plain',headers={
+            'X-Filename':'caf%C3%A9%20notice.txt','X-Document-Group':'tender%20pack'})
+        self.assertEqual(status,201)
+        self.assertEqual(record['filename'],'café notice.txt')
+        self.assertEqual(record['group_id'],'tender pack')
+        status,body,_=self.call('POST',f'/api/tenders/{tid}/documents',b'bad name',ctype='text/plain',headers={
+            'X-Filename':'..%2F..%2Fprivate.txt','X-Document-Group':'tender'})
+        self.assertEqual(status,400)
+        self.assertEqual(body['error']['code'],'validation_error')
+        status,body,_=self.call('POST',f'/api/tenders/{tid}/documents',b'bad group',ctype='text/plain',headers={
+            'X-Filename':'notice.txt','X-Document-Group':'tender%0Apack'})
+        self.assertEqual(status,400)
+        self.assertEqual(body['error']['code'],'validation_error')
+
+    def test_requirements_are_append_only_at_the_database_boundary(self):
+        tid=self.create_tender()
+        status,requirement,_=self.call('POST',f'/api/tenders/{tid}/requirements',{
+            'code':'REQ-LOCK','text':'Keep the published criterion unchanged.','category':'technical',
+            'mandatory':True,'kind':'objective'})
+        self.assertEqual(status,201)
+        with self.assertRaises(sqlite3.IntegrityError):
+            with self.app.db() as conn:
+                conn.execute('UPDATE requirements SET text=? WHERE id=?',('Changed criterion',requirement['id']))
+        with self.assertRaises(sqlite3.IntegrityError):
+            with self.app.db() as conn:
+                conn.execute('DELETE FROM requirements WHERE id=?',(requirement['id'],))
+        status,rows,_=self.call('GET',f'/api/tenders/{tid}/requirements')
+        self.assertEqual(status,200)
+        self.assertEqual(rows['items'][0]['text'],'Keep the published criterion unchanged.')
+
     def test_rejects_weak_service_secret_at_startup(self):
         with self.assertRaises(ValueError): TenderLensAPI(Path(self.tmp.name)/'weak.sqlite',Path(self.tmp.name)/'weak-blobs','short')
     def test_server_bind_defaults_to_public_interface_and_prefers_platform_port(self):
